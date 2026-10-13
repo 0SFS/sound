@@ -1,0 +1,100 @@
+{
+  "name": "@0sfs/sound",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Sound for 0SFS: the audio engine, mixing, volumes and the Sound panel.",
+  "license": "AGPL-3.0-only",
+  "type": "module",
+  "exports": {
+    "./aircraftAudioProfiles": {
+      "source": "./src/aircraftAudioProfiles.ts",
+      "default": "./src/aircraftAudioProfiles.ts"
+    },
+    "./audioPose": {
+      "source": "./src/audioPose.ts",
+      "default": "./src/audioPose.ts"
+    },
+    "./audioQuality": {
+      "source": "./src/audioQuality.ts",
+      "default": "./src/audioQuality.ts"
+    },
+    "./audioSettings": {
+      "source": "./src/audioSettings.ts",
+      "default": "./src/audioSettings.ts"
+    },
+    "./audioSnapshot": {
+      "source": "./src/audioSnapshot.ts",
+      "default": "./src/audioSnapshot.ts"
+    },
+    "./createFlightAudio": {
+      "source": "./src/createFlightAudio.ts",
+      "default": "./src/createFlightAudio.ts"
+    },
+    "./createTireAudio": {
+      "source": "./src/createTireAudio.ts",
+      "default": "./src/createTireAudio.ts"
+    },
+    "./dspHarness": {
+      "source": "./src/dspHarness.ts",
+      "default": "./src/dspHarness.ts"
+    },
+    "./engineAcousticDefinitions": {
+      "source": "./src/engineAcousticDefinitions.ts",
+      "default": "./src/engineAcousticDefinitions.ts"
+    },
+    "./jsbsimAudioAdapter": {
+      "source": "./src/jsbsimAudioAdapter.ts",
+      "default": "./src/jsbsimAudioAdapter.ts"
+    },
+    "./legacyTireAudioGraph": {
+      "source": "./src/legacyTireAudioGraph.ts",
+      "default": "./src/legacyTireAudioGraph.ts"
+    },
+    "./settings": {
+      "source": "./src/settings.ts",
+      "default": "./src/settings.ts"
+    },
+    "./SoundSettingsPanel": {
+      "source": "./src/SoundSettingsPanel.tsx",
+      "default": "./src/SoundSettingsPanel.tsx"
+    },
+    "./validation/engineProfileReference": {
+      "types": "./scripts/validation/audio/engineProfileReference.d.mts",
+      "default": "./scripts/validation/audio/engineProfileReference.mjs"
+    },
+    "./package.json": "./package.json"
+  },
+  "peerDependencies": {
+    "@0sfs/aircraft": "0.1.0",
+    "@0sfs/engines": "0.1.0",
+    "@0sfs/logging": "0.1.0",
+    "@babylonjs/core": "8.56.2",
+    "@felipegalind0/jsbsim": "1.2.4-fork.21",
+    "foss-earth": "0.1.0"
+  },
+  "peerDependenciesMeta": {
+    "@0sfs/aircraft": {
+      "optional": true
+    },
+    "@0sfs/engines": {
+      "optional": true
+    },
+    "@0sfs/logging": {
+      "optional": true
+    },
+    "@babylonjs/core": {
+      "optional": true
+    },
+    "@felipegalind0/jsbsim": {
+      "optional": true
+    },
+    "foss-earth": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "react": "19.2.6",
+    "react-dom": "19.2.6",
+    "vitest": "4.1.6"
+  }
+}

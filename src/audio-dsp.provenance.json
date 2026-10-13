@@ -1,0 +1,94 @@
+{
+  "artifact": "audio-dsp.wasm",
+  "license": "AGPL-3.0-only",
+  "note": "Original DSP written for this repository. No third-party audio engine, recorded asset or model is linked, embedded or derived.",
+  "toolchain": {
+    "compiler": "emcc",
+    "version": "6.0.9",
+    "flags": [
+      "-O3",
+      "-std=c++17",
+      "--no-entry",
+      "-sSTANDALONE_WASM=1",
+      "-sALLOW_MEMORY_GROWTH=1",
+      "-sINITIAL_MEMORY=2097152",
+      "-sSTACK_SIZE=131072",
+      "-sMALLOC=emmalloc",
+      "-sERROR_ON_UNDEFINED_SYMBOLS=1",
+      "-sFILESYSTEM=0",
+      "-fno-exceptions",
+      "-fno-rtti",
+      "-fno-fast-math"
+    ]
+  },
+  "sources": [
+    {
+      "file": "acoustic_profile.h",
+      "sha256": "1c88eabc0d1c47d68a096d5593b657c2495bf980e509785f0d5433162bb2c52b"
+    },
+    {
+      "file": "convolver.h",
+      "sha256": "5565dd79ad94832a24693171c04fb3aaafa8402afd967406c60e1f232e382dba"
+    },
+    {
+      "file": "core.cpp",
+      "sha256": "f61bbb2421f55bfaa2e7ff06cbba1ee074e8e5ca59744587b3b8cae9c878b6e9"
+    },
+    {
+      "file": "granular.h",
+      "sha256": "940b492d5ce19be0db016bcb756f2b9c561ca532cb8206b08927dce8d82b88f5"
+    },
+    {
+      "file": "primitives.h",
+      "sha256": "c2280ccf199af4f05fc02d74a4c4336b270a92034ebd937a35b72e127cdec93a"
+    },
+    {
+      "file": "snapshot.h",
+      "sha256": "a1f00c21c714d6fea0e63585cab72bd0c720e2f2d18afebd13913e020ed16e97"
+    },
+    {
+      "file": "turbofan.h",
+      "sha256": "dc92d7418f817adb045cd6f697e0999705f152042f38ab1aecf33115f21f2fbf"
+    }
+  ],
+  "wasm": {
+    "bytes": 50977,
+    "sha256": "100eefa8f3eaec2e3f3cfee12086732871f7aa0cb96f157b87f61e7ec0b6b677"
+  },
+  "imports": [
+    "env.emscripten_notify_memory_growth"
+  ],
+  "exports": [
+    "__indirect_function_table",
+    "_emscripten_stack_restore",
+    "_initialize",
+    "emscripten_stack_get_current",
+    "memory",
+    "osfs_audio_band_alloc",
+    "osfs_audio_band_clear",
+    "osfs_audio_bands_ready",
+    "osfs_audio_batch_length",
+    "osfs_audio_batch_ptr",
+    "osfs_audio_commit_batch",
+    "osfs_audio_commit_profile",
+    "osfs_audio_get_shed",
+    "osfs_audio_get_tier",
+    "osfs_audio_init",
+    "osfs_audio_out",
+    "osfs_audio_process",
+    "osfs_audio_profile_ptr",
+    "osfs_audio_profile_size",
+    "osfs_audio_reset",
+    "osfs_audio_set_afterburner_volume",
+    "osfs_audio_set_epoch",
+    "osfs_audio_set_gains",
+    "osfs_audio_set_limits",
+    "osfs_audio_set_shed",
+    "osfs_audio_set_tier",
+    "osfs_audio_set_tire",
+    "osfs_audio_snapshot_size",
+    "osfs_audio_stats",
+    "osfs_audio_stats_count"
+  ],
+  "builtUtc": "2026-10-08T02:17:36.633Z"
+}
