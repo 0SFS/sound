@@ -1,3 +1,4 @@
+import { Resettable } from "foss-earth/shell";
 import type { FlightAudioStatus } from "./createFlightAudio";
 import { AVAILABILITY_LABELS, type TierId } from "./audioQuality";
 import {
@@ -67,13 +68,15 @@ export function SoundSettingsPanel({ state, onAction }: {
         onClick={() => onAction({ type: "enable", enabled: false })}>Turn sound off</button>}
       <label className="flight-panel__field">
         <span>Quality</span>
-        <select aria-label="Sound quality" value={settings.requested}
-          onChange={event => onAction({ type: "quality", quality: event.target.value as AudioQualityId })}>
-          {AUDIO_QUALITY_IDS.map(id => {
-            const option = qualityOption(state, id);
-            return <option key={id} value={id} disabled={option.disabled}>{option.label}</option>;
-          })}
-        </select>
+        <Resettable parameter="osfs.sound.quality" name="Sound quality">
+          <select aria-label="Sound quality" value={settings.requested}
+            onChange={event => onAction({ type: "quality", quality: event.target.value as AudioQualityId })}>
+            {AUDIO_QUALITY_IDS.map(id => {
+              const option = qualityOption(state, id);
+              return <option key={id} value={id} disabled={option.disabled}>{option.label}</option>;
+            })}
+          </select>
+        </Resettable>
       </label>
       <p className="flight-panel__hint" role="status">
         Requested {AUDIO_QUALITY_LABELS[settings.requested]} · Effective {tierLabel(state.effective)}
@@ -93,19 +96,25 @@ export function SoundSettingsPanel({ state, onAction }: {
       </>}
       <label className="flight-panel__field">
         <span>Master volume · {percent(settings.masterVolume * 100)}</span>
-        <input type="range" aria-label="Master volume" min={0} max={8} step={0.05} value={settings.masterVolume}
-          onChange={event => onAction({ type: "settings", patch: { masterVolume: Number(event.target.value) } })} />
+        <Resettable parameter="osfs.sound.masterVolume">
+          <input type="range" aria-label="Master volume" min={0} max={8} step={0.05} value={settings.masterVolume}
+            onChange={event => onAction({ type: "settings", patch: { masterVolume: Number(event.target.value) } })} />
+        </Resettable>
       </label>
       <label className="flight-panel__field">
         <span>Engine volume · {percent(settings.engineVolume * 100)}</span>
-        <input type="range" aria-label="Engine volume" min={0} max={8} step={0.05} value={settings.engineVolume}
-          onChange={event => onAction({ type: "settings", patch: { engineVolume: Number(event.target.value) } })} />
+        <Resettable parameter="osfs.sound.engineVolume">
+          <input type="range" aria-label="Engine volume" min={0} max={8} step={0.05} value={settings.engineVolume}
+            onChange={event => onAction({ type: "settings", patch: { engineVolume: Number(event.target.value) } })} />
+        </Resettable>
       </label>
       <label className="flight-panel__field">
         <span>Sound position · {positionLabel(settings.listenerCockpitBlend)}</span>
-        <input type="range" aria-label="Sound position" aria-valuetext={positionLabel(settings.listenerCockpitBlend)}
-          min={0} max={1} step={0.01} value={settings.listenerCockpitBlend}
-          onChange={event => onAction({ type: "settings", patch: { listenerCockpitBlend: Number(event.target.value) } })} />
+        <Resettable parameter="osfs.sound.listenerCockpitBlend" name="Sound position">
+          <input type="range" aria-label="Sound position" aria-valuetext={positionLabel(settings.listenerCockpitBlend)}
+            min={0} max={1} step={0.01} value={settings.listenerCockpitBlend}
+            onChange={event => onAction({ type: "settings", patch: { listenerCockpitBlend: Number(event.target.value) } })} />
+        </Resettable>
         <span>Camera ↔ Cockpit</span>
       </label>
       <p className="flight-panel__hint">
@@ -113,20 +122,26 @@ export function SoundSettingsPanel({ state, onAction }: {
       </p>
       <label className="flight-panel__field">
         <span>Airframe wind volume</span>
-        <input type="range" aria-label="Airframe wind volume" min={0} max={1} step={0.05} value={settings.airframeVolume}
-          onChange={event => onAction({ type: "settings", patch: { airframeVolume: Number(event.target.value) } })} />
+        <Resettable parameter="osfs.sound.airframeVolume" name="Airframe wind volume">
+          <input type="range" aria-label="Airframe wind volume" min={0} max={1} step={0.05} value={settings.airframeVolume}
+            onChange={event => onAction({ type: "settings", patch: { airframeVolume: Number(event.target.value) } })} />
+        </Resettable>
       </label>
       <p className="flight-panel__hint">
         Wind and gear/flap turbulence grow with airspeed. Independent of engine volume and engine mute.
       </p>
       <label className="flight-panel__field flight-panel__field--inline">
-        <input type="checkbox" aria-label="Mute engine" checked={settings.engineMuted}
-          onChange={event => onAction({ type: "settings", patch: { engineMuted: event.target.checked } })} />
+        <Resettable parameter="osfs.sound.engineMuted">
+          <input type="checkbox" aria-label="Mute engine" checked={settings.engineMuted}
+            onChange={event => onAction({ type: "settings", patch: { engineMuted: event.target.checked } })} />
+        </Resettable>
         <span>Mute engine</span>
       </label>
       <label className="flight-panel__field flight-panel__field--inline">
-        <input type="checkbox" aria-label="Reduced dynamic range" checked={settings.reducedDynamicRange}
-          onChange={event => onAction({ type: "settings", patch: { reducedDynamicRange: event.target.checked } })} />
+        <Resettable parameter="osfs.sound.reducedDynamicRange">
+          <input type="checkbox" aria-label="Reduced dynamic range" checked={settings.reducedDynamicRange}
+            onChange={event => onAction({ type: "settings", patch: { reducedDynamicRange: event.target.checked } })} />
+        </Resettable>
         <span>Reduced dynamic range</span>
       </label>
       <p className="flight-panel__hint">
