@@ -9,10 +9,10 @@ import {
 /**
  * Validated sound settings, kept in the osfs.sound.* parameters.
  *
- * Two rules come straight from sound.md §6 and shape everything here: a stored
- * preference must never restore louder sound than the pilot last heard, and a
- * downgrade persists until an explicit re-test. So `requested` is the pilot's
- * ask and `effective` is a runtime fact that is never stored. Sound defaults
+ * `requested` is the pilot's saved choice; `effective` is a runtime fact that
+ * is never stored. Manual tiers stay selected, while Auto may reduce its live
+ * tier until explicitly retried without overwriting the saved choice. Older
+ * persisted downgrades remain readable and can be restored by retry. Sound defaults
  * on, starting at the first normal interaction permitted by browser autoplay;
  * a saved explicit off remains off.
  */
@@ -47,7 +47,7 @@ export interface AudioSettingsV1 {
   // one control rather than two that could disagree.
   engineMuted: boolean;
   reducedDynamicRange: boolean;
-  /** Set when a fallback dropped the tier; cleared only by an explicit re-test. */
+  /** Legacy persisted downgrade; an explicit quality selection or retry clears it. */
   downgradedFrom: AudioQualityId | null;
 }
 

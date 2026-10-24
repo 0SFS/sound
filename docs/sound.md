@@ -2,10 +2,10 @@
 
 Implementation handoff: [sound-implementation-prompt.md](sound-implementation-prompt.md) provides the assignment, repository entry points, work packages and delivery evidence. This document remains the source for technical budgets and release gates.
 
-Build selectable sound for the Cirrus SF50's Williams FJ33-5A and F-35B's Pratt & Whitney F135: **Off → Low → Med → High**, with automatic reduction when observed load exceeds the selected budget. High uses engine-specific procedural components and directional spectra; crackle and recorded residuals are separate future extensions. The implementation scope and acoustic qualification gates are in [High aircraft sound](proposals/high-aircraft-sound.md). Neural synthesis stays outside the shipping ladder.
+Build selectable sound for the C172's Lycoming IO320, Cirrus SF50's Williams FJ33-5A and F-35B's Pratt & Whitney F135: **Off → Low → Med → High**, with automatic reduction in **Auto** when observed load exceeds the selected budget. Manual Low, Med and High hold their selected tier. High uses engine-specific procedural components and directional spectra; crackle and recorded residuals are separate future extensions. The implementation scope and acoustic qualification gates are in [High aircraft sound](proposals/high-aircraft-sound.md). Neural synthesis stays outside the shipping ladder.
 
-The F-35B also uses this sound owner and the existing procedural core, with an
-explicit approximate F135 main-engine definition (§7). Engine identity,
+The C172 and F-35B use this sound owner and the shared output core, with
+explicit IO320 piston (§8) and approximate F135 main-engine (§7) definitions. Engine identity,
 aircraft installation and renderer selection are separate contracts (§2).
 The SF50 values and acoustic assumptions below remain its original reference
 design; they are not F135 data.
@@ -13,6 +13,10 @@ design; they are not F135 data.
 **Status: design, not measured performance.** Resource ceilings, thresholds, test inputs and acoustic tuning values below are proposed engineering budgets or assumptions, not FJ33 measurements. Model values are identified separately. Owners are implementation roles: **DSP** owns synthesis/tuning; **FDM** owns aircraft properties/calibration; **Perf** owns device measurements; **Release** owns assets/licenses/hosting. Assign people before implementation. Unfilled results remain **TBD** until their owner's stated gate passes.
 
 **Implementation status.** Off, Low and Med are implemented in the flight app on an AudioWorklet + WASM core and are **software-verified** (real-WASM renders, real-JSBSim adapter tests, offline sweep and fault-injection proxies). The 2026-10-05 High revision replaces the required recording bank with procedural component synthesis for both engines; the [implementation ledger](validation/audio-implementation-ledger.md) records its current checks and artifact hashes. On 2026-10-07 the owner confirmed listening validation of **Low, Med and High** and requested normal use without validation warnings. Sound now defaults **on at Med**, starting from the first normal browser-permitted interaction; explicitly saved Off remains Off. Auto chooses the highest supported tier and retains resource limits and fault fallback. Named-device performance qualification remains a separate evidence record; no benchmark or device pass is inferred from listening acceptance. Tier X is not implemented. An engine monitor on the flight display shows live engine state and what the audio core hears. Med's spatialisation was corrected on 2026-09-16 after a pilot report: its propagation delay line took its length from the camera distance, so a chase-camera zoom was heard as listener motion and bent the engine by up to two octaves, and the §2 storage cap was silencing the direct path past about 144 m. The delay tap now moves only with the modelled Doppler ratio, and level at range is §3's `min(1,1 m/distance)` law at every tier. Per-tier status, commands, hashes, pilot feedback, upstream candidates, pending work and owner blockers: [audio implementation ledger](validation/audio-implementation-ledger.md).
+
+The **2026-10-23 C172 addition** supplies separate IO320 firing and propeller
+synthesis from native piston telemetry (§8). Its software checks do not extend
+the earlier turbine listening acceptance to the new voice.
 
 ## 1. Tier ladder and resource envelopes
 
@@ -50,15 +54,27 @@ Admission requires the concrete browser/renderer capabilities and the tier's res
 | 3 | Med capabilities plus compatible engine-specific procedural setup and Tier 3 caps; explicit High or Auto | Shedding; continuing overload or runtime/memory failure → Med |
 | X | Explicit `audioExperimental` flag; cleared data/model and separate qualified experiment manifest | Any budget miss, starvation or unsupported backend → prepared Low; never enter X automatically |
 
+**Sound controls, 2026-10-23:** the ladder's overload exits apply to Auto.
+Manual Low, Med and High retain their selected tier through counted output
+underruns. A concrete unsupported capability can still limit admission, and a
+fatal processor fault still stops the failed node. The Sound tab uses the shared
+segmented slider and shows **Selected** separately from **Loaded**, with loading,
+browser activation and hold state. **Force Low/Med/High on** or **Retry sound**
+re-enables sound, clears the fault/fallback latch and resets the timeline. It
+rebuilds a failed graph or resumes a suspended context within that click, without
+reloading the page or releasing an active pause/loading/fault hold. Auto fallback
+stays in the current session and never replaces the saved Auto selection with
+Med, Low or Off. Older saved downgrades remain in effect until explicitly restored.
+
 Normal shedding order is **oscillator count → optional residual density → IR length → internal sample rate**, skipping absent features. Reduce engine oscillators `12 → 8 → 4 → 2`, retaining N1/N2 fundamentals; preserve the tire cue. Any future grain extension reduces grains `12 → 8 → 4` and starts/s `160 → 100 → 50`. Fade IR length `40 → 20 → 10 → 0 ms`. Last, try half-rate source synthesis, **22.05/24 kHz**, with anti-alias filtering and resampling to the unchanged context rate. Enable half-rate only if its resampler-inclusive cost is measurably lower. Then drop a tier; Low eventually mutes. These intermediate states are not full-quality tier claims. The pilot may lower source/partial counts and IR duration per tier (`osfs.sound.<tier>.*`, bounded by the table above); controls show counts or milliseconds, bounds, defaults and their cost. A noise cap must actually skip the corresponding source processing. Shedding starts from the pilot's caps.
 
-Proposed controller: use a **2-second** rolling distribution where timing exists; shed after **two consecutive** over-budget windows. A measured deadline miss or actual output-underrun increment triggers an immediate tier drop, bypassing incremental shedding. Never delay further downgrades while overload persists. Lock out upgrades until **60 seconds** without observed faults, then allow explicit re-test from settings; never upgrade automatically during flight. Fade changes over **50 ms** within existing voice caps; under severe overload fade down, switch and fade up instead of running two engines. Low must remain executable without fetching/compiling during ordinary shedding. A fatal `processorerror` cannot recover inside that node: enter Off, recreate from the loaded/compiled module, then offer a bounded Low retry; stay Off if initialization fails.
+Proposed Auto controller: use a **2-second** rolling distribution where timing exists; shed after **two consecutive** over-budget windows. A measured deadline miss or actual output-underrun increment triggers an immediate tier drop, bypassing incremental shedding. Never delay further downgrades while overload persists. Lock out offered upgrades until **60 seconds** without observed faults; an explicit pilot retry clears the lockout. Never upgrade automatically during flight. Fade changes over **50 ms** within existing voice caps; under severe overload fade down, switch and fade up instead of running two engines. Low must remain executable without fetching/compiling during ordinary shedding. A fatal `processorerror` cannot recover inside that node: enter Off and offer the retry action, which recreates the requested supported tier from cached compiled code. Stay stopped with a visible error if initialization fails.
 
 **Observability limit:** no portable API supplies per-block CPU and output dropouts everywhere. Auto's supported-tier choice does not establish deadline performance. Shedding acts only on observed load/faults; an absent metric remains unknown. Exact hardware/OS/browser-build/output-route/sample-rate/transport profiles remain performance evidence, separate from tier availability. Never infer certification from a user-agent string. Processor errors, stale telemetry and context state are fault signals, not proof of deadline misses. Retain manual Low/Off and user resource controls. Perf owns this gap before any claim of universal automatic deadline protection.
 
 ## 2. Architecture and static hosting
 
-Implement a **purpose-built turbofan core** in repository-owned C++ compiled to WASM. No external synthesis library is selected; there is no claimed library version or WASM readiness. DSP must commit the core, lock the compiler/toolchain and record flags/WASM hash before qualification. Use a scalar baseline; SIMD is a separately measured variant.
+Implement **purpose-built engine voices** in repository-owned C++ compiled to WASM. The explicit piston and turbofan renderers share transport, output and effects; their source synthesis remains separate. No external synthesis library is selected; there is no claimed library version or WASM readiness. DSP must commit the core, lock the compiler/toolchain and record flags/WASM hash before qualification. Use a scalar baseline; SIMD is a separately measured variant.
 
 ### Engine identity, installation and renderer contract
 
@@ -109,17 +125,17 @@ The turbine schema also owns the fuel-flow/running combustion interpretation
 and its threshold; the existing threshold is SF50-trace-led, and F135
 start/abort/relight behavior still needs independent validation.
 
-`procedural-jet-v1` currently supports **one engine source**, the implemented
-dynamics ABI and turbine schema. Unknown renderers, incompatible ABI, missing
+`procedural-jet-v1` and `procedural-piston-v1` each support **one engine source**,
+the implemented dynamics ABI and their explicit turbine or piston schema. Unknown renderers, incompatible ABI, missing
 parameters, unsupported classes and multiple installed sources are rejected.
-There is no engine-zero or FJ33 fallback. Separate piston, turboprop,
+There is no engine-zero or FJ33 fallback. Turboprop,
 turboshaft, LiftFan and multi-engine rendering are not implemented. A new
 renderer supplies its binary, worklet, setup encoder and required native
 telemetry contract; a different dynamics payload needs an implemented ABI
 bridge before admission. Adding an aircraft then declares its installation
 without adding aircraft branches to the renderer. Multi-source support also
 needs source budgeting/mixing and airframe noise generated once per aircraft:
-wind/configuration sound currently lives inside the one turbofan voice.
+wind/configuration sound currently lives inside the selected single-engine voice.
 
 The optional bank infrastructure's manifest **V2** names an engine definition and renderer. The
 validated identity stays attached through loading, resampling and installation;
@@ -290,7 +306,7 @@ Every audible shipping tier needs p95/max/dropout evidence on **at least two nam
 3. **Tier 3 — DSP/FDM/Perf:** procedural component models for FJ33 and F135, directional spectra and independent cockpit treatment, following [High aircraft sound](proposals/high-aircraft-sound.md). Software completion requires real-WASM and integration acceptance; acoustic qualification separately requires reference comparisons and documented level-matched review across idle, acceleration, high power, cruise and shutdown. Device qualification requires Pixel 6a + M1 and resource caps. Record reviewers/disagreements; no numerical realism claims without evidence. Crackle, full STOVL sound and licensed residual banks are later, independent milestones.
 4. **Tier X — separate research:** `audioExperimental` defaults off and stays hidden from normal settings until its gates pass. Do not delay Low/Med for it.
 
-**Settings:** **Off, Low, Med, High**, plus Auto selecting the highest supported tier. Sound defaults on at Med. Low/Med/High have plain labels and run without a validation warning or extra opt-in. Show requested/effective quality after fallback, independent volumes, reduced dynamic range and actual per-tier resource controls. Procedural High downloads no recordings. Disable with **“Unsupported on this device”** only for a concrete missing capability, with its reason. **“Audio pack unavailable”** applies only to a future optional recorded extension. Browser activation happens on the first normal interaction; “Enable sound” is offered only when the saved master preference is off. Real fault messages and persistent downgrade/re-test controls remain.
+**Settings:** one compact segmented slider for **Off, Low, Med, High, Auto**. Sound defaults on at Med. Low/Med/High have plain labels, hold the selected quality and run without a validation warning or extra opt-in. Auto selects the highest supported tier and can lower its live tier after overload. Show selected/loaded quality separately, including loading, suspended, held and browser-locked state; keep independent volumes, reduced dynamic range and actual per-tier resource controls. Procedural High downloads no recordings. Disable a tier only for a concrete missing capability and expose its reason. Browser activation happens on the first normal interaction; “Enable sound” is offered when the saved master preference is off. Keep **Force Low/Med/High on** or **Retry sound** available even when sound is already enabled, so a failed start or processor fault can recover without a page reload. Real fault messages and legacy saved-downgrade restoration remain.
 
 **Pilot controls, 2026-10-07 follow-up.** Continuous, saved controls apply live.
 Master, engine boost and acoustic viewpoint live in Sound; afterburner volume
@@ -410,8 +426,9 @@ does not hold real native thrust, total fuel or shaft speed fixed. The current
 native model immediately switches its augmented thrust table before fuel
 settles, so a residual early base-source change can still occur; the native
 thrust/fuel closure remains an engine-model issue. There is no extra
-oscillator, noise stream or voice. Snapshot ABI 4 adds one Float64 observation;
-the worklet wrapper and WASM core share the new 34-field layout.
+oscillator, noise stream or voice. This reheat revision added one Float64
+observation in snapshot ABI 4; the current ABI 5 retains it and appends the
+three native piston observations described in §8.
 The physical FDM inhibits augmentation during deployed conversion; audio
 observes that result without copying its command mask. Eight real F-35B
 SDK/DSP cases pass on installed `1.2.4-fork.8`, including dry, afterburning,
@@ -424,6 +441,7 @@ the flame; its thermal inertia does not justify combustion sound before fuel
 burns. This is a causal inference from the source mechanism, not a measured
 F135 light/sound-onset tolerance. Propagation, cockpit transfer, output latency,
 camera exposure and visibility thresholds remain separate observations.
+
 [NASA Glenn afterburner description](https://www.nasa.gov/special-projects-laboratory-turbojet-enhancements/).
 No matched F135 cold/warm onset recording or listening qualification is
 retained, and this audio correction does not establish visual acceptance.
@@ -458,3 +476,50 @@ control is required by the High increment because default SF50 output contains b
 wind and configuration noise. This profile adds no new band and makes no
 noise-cap enforcement claim. The ledger distinguishes the baseline from later
 cap-enforcement, zero-volume and aircraft-replacement fixes.
+
+## 8. C172 IO320 piston and propeller sound, 2026-10-23
+
+The C172 now declares its native engine 0 explicitly as `io320-piston`, using
+the `jsbsim-piston-v1` telemetry schema and `procedural-piston-v1` renderer.
+The renderer shares the worklet/WASM binary and output path with the turbine
+renderer but selects a separate original piston voice through a validated,
+typed setup transaction. No turbine shaft percentages or reference-engine
+fallback are used. Its acoustic setup contains four cylinders, a four-stroke
+cycle and the installed two-blade propeller; rated references are the engine
+model's 2,700 RPM and 160 hp. Gains and spectral shapes are synthesis choices.
+
+The catalog-checked native properties are `engine-rpm`, `propeller-rpm`,
+`power-hp`, `fuel-flow-rate-pps` and `set-running`, under the explicitly
+installed engine path. Crankshaft RPM sets firing frequency to
+`RPM / 60 × cylinders × 2 / strokeCycle`; propeller RPM independently sets
+blade passage to `RPM / 60 × bladeCount`. Shaft power controls the approximate
+load envelope. Firing harmonics, mechanical rotation, exhaust noise and
+propeller tones/noise form one mono source before the existing spatial,
+cockpit and dynamics stages. The voice uses at most twelve partials and four
+engine/airframe noise sources; Low retains four partials. It uses no recorded
+clips, grains or model weights and stays within the existing tier source caps.
+
+For this piston schema, native `set-running` determines combustion. Fuel
+delivery can continue after magnetos are switched off, so positive fuel flow
+alone never asserts firing. Turning shafts can still produce mechanical and
+propeller sound after ignition stops; stopped shafts with no combustion and
+no airframe input are silent. Required native observations must exist and be
+finite. Missing or invalid observations remain unavailable and can recover on
+a later valid read.
+
+Dynamics ABI `osfs-audio-dynamics-v5` uses snapshot version **5**, with **37
+Float64 fields**. It appends native `engineRpm`, `propellerRpm` and
+`shaftPowerHp` plus independent availability bits. Signed native shaft power
+is preserved in telemetry; synthesis clamps negative power to zero load.
+Both transports and the worklet wrapper share this layout. The setup payload
+contains a voice selector and a separate piston parameter section; piston
+profiles cannot be admitted through the turbine renderer or vice versa.
+
+Real packaged-C172 tests cover native property mapping, throttle response,
+ignition-off fuel flow, invalid-observation recovery and audible finite
+Low/Med/High renders. Direct shipped-WASM tests check firing/propeller
+frequency, stopped silence, windmilling, load response, deterministic output
+and both 44.1/48 kHz. These software checks establish the connection and
+synthesis behavior. The new voice's timbre, loudness, cockpit transfer and
+device performance still need listening and measurement; the 2026-10-07
+listening acceptance predates this piston implementation.

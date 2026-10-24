@@ -61,6 +61,20 @@ describe("audio snapshot ABI", () => {
 });
 
 describe("writeAudioSnapshot", () => {
+  it("keeps native piston shafts and signed shaft power, clearing invalid availability", () => {
+    const target = new Float64Array(AUDIO_SNAPSHOT_SIZE);
+    const bits = AVAILABILITY.ENGINE_RPM | AVAILABILITY.PROPELLER_RPM | AVAILABILITY.SHAFT_POWER;
+    writeAudioSnapshot(target, 0, { sequence: 1, epoch: 1, simTimeS: 0, availability: bits,
+      engineRpm: 2400, propellerRpm: 2300, shaftPowerHp: -2 });
+    expect(target[AUDIO_SNAPSHOT_SLOT.engineRpm]).toBe(2400);
+    expect(target[AUDIO_SNAPSHOT_SLOT.propellerRpm]).toBe(2300);
+    expect(target[AUDIO_SNAPSHOT_SLOT.shaftPowerHp]).toBe(-2);
+    expect(target[AUDIO_SNAPSHOT_SLOT.availability]).toBe(bits);
+    writeAudioSnapshot(target, 0, { sequence: 2, epoch: 1, simTimeS: 1, availability: bits,
+      engineRpm: Number.NaN, propellerRpm: -1, shaftPowerHp: Number.POSITIVE_INFINITY });
+    expect(target[AUDIO_SNAPSHOT_SLOT.availability]).toBe(0);
+    expect(target.every(Number.isFinite)).toBe(true);
+  });
   it("preserves available zero burned fuel, but refuses unavailable or invalid fuel", () => {
     const target = new Float64Array(AUDIO_SNAPSHOT_SIZE);
     for (const value of [0, 0.003, undefined, -1, Number.NaN, Number.POSITIVE_INFINITY]) {

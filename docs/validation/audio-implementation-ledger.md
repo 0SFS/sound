@@ -1213,3 +1213,85 @@ production build with installed/emitted artifact verification. The later
 validation-harness scheduling correction is checked separately in the
 [joint onset record](https://github.com/0SFS/F135/blob/main/docs/validation/f135-ab-onset.md). No browser, server, GPU, audio-device or
 performance benchmark run was initiated here.
+
+## 21. C172 piston sound and recoverable quality controls, 2026-10-23
+
+**Owner: 0sfs. Local implementation; software verification is separate from
+listening acceptance.** A pilot report clarified that the C172 had no engine
+sound installation. It now declares the explicit `io320-piston` definition,
+native engine index 0, `jsbsim-piston-v1` schema and
+`procedural-piston-v1` renderer. The turbine renderer still admits only its
+declared turbine schemas/classes. The new renderer uses the shared worklet
+binary and output/effects ownership with a distinct typed piston setup and
+C++ voice; it does not map RPM to N1/N2 or substitute FJ33 synthesis.
+
+The adapter reads native crankshaft RPM, propeller RPM, shaft power, fuel flow
+and running state from catalog-checked, non-creating property batches. Native
+`set-running` gates piston firing because the real model continues delivering
+fuel with magnetos off. Invalid required observations clear availability and
+recover with valid subsequent reads. Geometry remains the installed native
+engine position transformed relative to the model CG and aircraft stance.
+The Sound status exposes piston shaft RPM and hp rather than turbine percentages.
+
+The original piston voice combines four-cylinder/four-stroke firing
+harmonics, two-blade passage harmonics, mechanical rotation, load-shaped
+exhaust noise and propeller noise. Frequencies follow the independent native
+shafts; shaft power shapes load. Ignition-off shafts can remain audible while
+firing stops. The fully stopped engine is silent with airframe input disabled.
+Low preserves four partials; Med/High can use twelve, and the piston voice
+uses at most four engine/airframe noise streams. It allocates no source pool
+inside the callback and adds no clips, grains or model weights.
+
+Snapshot version 5 / `osfs-audio-dynamics-v5` appends `engineRpm`,
+`propellerRpm` and `shaftPowerHp` to the existing dynamics payload, for 37
+Float64 fields. Independent availability bits cover all three. Shared batch
+widths, the worklet constant and the C++ header are updated together. The
+fixed profile payload has 45 fields: the existing jet section, a voice selector
+and the validated piston section. Current-source artifact verification passed.
+The rebuilt original WASM is **54,821 bytes**, compiled with pinned
+**emcc 6.0.9**, SHA-256
+`37be82c9e98b6c73d80d55da739ff4c7f9841fd4e43db7140af0aa7f24357687`.
+The source inventory/provenance now includes `piston.h`. Compilation used an
+ignored repository-local copy of the Emscripten cache because the Homebrew
+cache is outside the writable workspace; no dependency source was changed.
+
+Validation coverage:
+
+- `fly/src/flight/audio/c172Audio.integration.test.ts`: actual packaged native
+  model property equality, absent N1/N2 bits, throttle-driven RPM/power,
+  magnetos-off firing state despite fuel flow, invalid native recovery and
+  finite audible output at all three audible tiers through the shipped WASM.
+- `sound/tests/pistonAudio.test.ts`: crankshaft firing frequency, independent
+  propeller blade passage, combustion gating, stopped silence, windmilling,
+  power response, deterministic output and finite audible renders at
+  44.1/48 kHz under the tier caps.
+- Architecture/snapshot/transport/profile tests cover explicit piston
+  admission, class/schema rejection, parameter bounds, setup order and wire
+  widths. Existing turbine renders remain part of the integrated regression
+  check. The final coordinated check outcome is recorded separately below.
+
+The Sound tab's shared segmented slider, Selected/Loaded status and explicit
+Force/Retry action are described in [sound.md §1](../sound.md#1-tier-ladder-and-resource-envelopes).
+Manual tiers retain the selected implementation; Auto reductions stay in the
+session. Runtime recovery clears failed initialization/processor state,
+handles suspended contexts and keeps loading/pause holds authoritative.
+
+The IO320 gains, envelopes, exhaust spectrum and cockpit response are original
+approximations. No listening calibration, measured SPL, named-device deadline
+qualification or universal dropout protection is claimed. Prior listening
+acceptance applies to the earlier turbine implementation; C172 listening is
+a new hands-on check. Changes remain local for the user's testing.
+
+The final coordinated sound and flight-audio regression run passed **298 tests
+in 23 files**, including the recovery, UI, real C172, FJ33/F135 and shipped-WASM
+cases. Fly typechecking, scoped ESLint and current-source audio artifact
+verification passed. These checks do not replace the user's listening test.
+After adding explicit loading/pause/fault hold reasons to the status, the
+affected runtime, panel and flight-panel checks passed **74 tests in 3 files**,
+with typechecking and scoped ESLint still passing. The real local application
+was reviewed in cropped desktop and phone screenshots: native input selected
+Med/High, loaded status matched, Force on remained available and the C172
+reported native engine/propeller RPM and shaft power. The task-specific Test
+tab opened correctly with `diagnostics` and `flight` feedback providers.
+The browser review used the normal raster fallback without a Google key and
+did not assess physical audio output or reproduce the reported world freeze.

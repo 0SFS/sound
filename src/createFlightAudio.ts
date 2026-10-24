@@ -33,6 +33,9 @@ export interface FlightAudioStatus {
   requested: AudioQualityId;
   effective: TierId;
   mode: FlightAudioMode;
+  /** A context exists while the renderer and worklet are still loading. */
+  loading: boolean;
+  contextState: AudioContextState | null;
   /** Set when the browser will not start audio without a fresh gesture. */
   gestureLocked: boolean;
   /** One short line for the Sound panel, or null when everything is nominal. */
@@ -47,10 +50,15 @@ export interface FlightAudioStatus {
   transport: "port" | "sab" | null;
   sampleRateHz: number | null;
   held: boolean;
+  holdReasons: readonly AudioHoldReason[];
   settings: AudioSettingsV1;
   readOnlyReason: string | null;
   /** Last engine telemetry sent to the core; null unless engine sound is running. */
-  engine: { n1Pct: number; n2Pct: number; fuelFlowPps: number; combustion: boolean; running: boolean } | null;
+  engine: {
+    n1Pct: number; n2Pct: number; fuelFlowPps: number; combustion: boolean; running: boolean;
+    kind?: "piston" | "turbine";
+    engineRpm?: number; propellerRpm?: number; shaftPowerHp?: number;
+  } | null;
   /** Core timeline counters from the worklet, refreshed at 1 Hz. */
   core: { epoch: number; resyncs: number; staleFades: number; snapshotsDropped: number; eventsDropped: number } | null;
   /**
@@ -151,7 +159,7 @@ export interface FlightAudioHandle {
   patchSettings(patch: Partial<Pick<AudioSettingsV1,
     "masterVolume" | "engineVolume" | "airframeVolume" | "afterburnerVolume" | "listenerCockpitBlend"
     | "engineMuted" | "reducedDynamicRange">>): void;
-  /** Explicit re-test after a downgrade (sound.md §1, §6). */
+  /** Enable and retry the selected sound, clearing a downgrade or processor fault. */
   retest(): void;
   /**
    * The saved settings changed without this handle, as from Show all
@@ -200,6 +208,7 @@ export function createFlightAudio(options: FlightAudioOptions): FlightAudioHandl
   const tireCue = { enabled: false, volume: 1 };
   let context: AudioContext | null = null;
   let node: AudioWorkletNode | null = null;
+  let processorReady = false;
   let transport: AudioTransport | null = null;
   let adapter: AudioAdapter | null = null;
   let renderer: AudioRendererRegistration | null = null;
@@ -217,7 +226,7 @@ export function createFlightAudio(options: FlightAudioOptions): FlightAudioHandl
   let suspendTimer: ReturnType<typeof setTimeout> | null = null;
   let lastStats: number[] | null = null;
   let gestureLocked = false;
-  /** After a processor fault nothing restarts until the pilot switches sound again. */
+  /** A processor fault waits for an explicit quality choice or retry. */
   let faulted = false;
   let message: string | null = null;
   let unlockArmed = false;
@@ -267,7 +276,7 @@ export function createFlightAudio(options: FlightAudioOptions): FlightAudioHandl
 
   const effectiveTier = (): TierId => {
     // No graph means nothing is audible, whatever the preference says.
-    if (!wantsGraph() || !node) return "off";
+    if (!wantsGraph() || !node || !processorReady) return "off";
     const wanted = requestedTier();
     if (!fallback) return wanted;
     // A fallback may only ever lower the tier, never raise it above the ask.
@@ -286,6 +295,8 @@ export function createFlightAudio(options: FlightAudioOptions): FlightAudioHandl
     requested: settings.requested,
     effective: effectiveTier(),
     mode: mode(),
+    loading: context !== null && context.state !== "closed" && !processorReady,
+    contextState: context?.state ?? null,
     gestureLocked,
     message,
     tireMessage: tireMessage(),
@@ -295,12 +306,15 @@ export function createFlightAudio(options: FlightAudioOptions): FlightAudioHandl
     transport: transport?.kind ?? null,
     sampleRateHz: context?.sampleRate ?? null,
     held,
+    holdReasons: [...holds],
     settings,
     readOnlyReason: options.settings.readOnlyReason,
     engine: lastReading && node && engineWanted()
       ? {
         n1Pct: lastReading.n1Pct, n2Pct: lastReading.n2Pct, fuelFlowPps: lastReading.fuelFlowPps,
         combustion: lastReading.combustion, running: lastReading.running,
+        kind: adapter?.diagnostics.profile?.engineClass === "piston" ? "piston" : "turbine",
+        engineRpm: lastReading.engineRpm, propellerRpm: lastReading.propellerRpm, shaftPowerHp: lastReading.shaftPowerHp,
       }
       : null,
     core: lastStats
@@ -351,6 +365,10 @@ export function createFlightAudio(options: FlightAudioOptions): FlightAudioHandl
     // A saved preference cannot satisfy autoplay, so the graph is built from the
     // pilot's first gesture instead of at load. start() creates and resumes the
     // context before its first await, so that still happens inside the gesture.
+    if (context?.state === "closed") {
+      generation += 1;
+      teardownGraph();
+    }
     if (context) {
       void resumeContext();
     } else {
@@ -376,7 +394,7 @@ export function createFlightAudio(options: FlightAudioOptions): FlightAudioHandl
   /* -------------------------------------------------------------- runtime */
 
   const currentGains = () => {
-    const sound = engineWanted();
+    const sound = engineWanted() && fallback?.tier !== "off";
     // Engine and tire gains stay independent, which is what keeps tire-only
     // playback possible. Master volume belongs to engine sound; the tire cue
     // alone keeps the level its own control sets, as it always has.
@@ -396,7 +414,10 @@ export function createFlightAudio(options: FlightAudioOptions): FlightAudioHandl
 
   const sendTier = (): void => {
     if (!node) return;
-    const tier = held ? "off" : effectiveTier();
+    // An Auto downgrade silences only engine sound. The independent tire cue
+    // keeps its cheapest audible kernel, with the engine gain at zero.
+    const effective = effectiveTier();
+    const tier = held ? "off" : effective === "off" && tireCue.enabled ? "low" : effective;
     node.port.postMessage({ type: "tier", tier: TIER_INDEX[tier] });
     node.port.postMessage({ type: "shed", level: fallback?.shed ?? 0 });
   };
@@ -405,12 +426,14 @@ export function createFlightAudio(options: FlightAudioOptions): FlightAudioHandl
     disarmUnlock();
     transport?.dispose();
     transport = null;
+    processorReady = false;
     if (node) {
-      try { node.port.onmessage = null; node.disconnect(); } catch { /* Already gone. */ }
+      try { node.port.onmessage = null; node.onprocessorerror = null; node.disconnect(); } catch { /* Already gone. */ }
       node = null;
     }
     const current = context;
     context = null;
+    if (current) current.onstatechange = null;
     if (current && current.state !== "closed") {
       void current.close().catch(() => { /* Disposal stays final. */ });
     }
@@ -431,6 +454,10 @@ export function createFlightAudio(options: FlightAudioOptions): FlightAudioHandl
       teardownGraph();
       return;
     }
+    if (context?.state === "closed") {
+      generation += 1;
+      teardownGraph();
+    }
     if (!context) {
       if (faulted) return;
       if (gesture) {
@@ -450,9 +477,9 @@ export function createFlightAudio(options: FlightAudioOptions): FlightAudioHandl
 
   const onProcessorError = (): void => {
     // sound.md §1: a fatal processorerror cannot recover inside that node. Drop
-    // to Off and keep the compiled module; switching sound again is the retry.
+    // to Off and keep the compiled module for the pilot's explicit retry.
     faulted = true;
-    message = "Sound stopped after an audio processor fault. Switch it off and on to retry.";
+    message = "Sound stopped after an audio processor fault. Retry sound to restart it.";
     teardownGraph();
     notify();
   };
@@ -463,6 +490,14 @@ export function createFlightAudio(options: FlightAudioOptions): FlightAudioHandl
       type?: string; values?: number[]; reason?: string; index?: number; accepted?: boolean; requestId?: number;
     } | null;
     if (!data) return;
+    if (data.type === "ready") {
+      processorReady = true;
+      sendGains();
+      sendTier();
+      refreshStats();
+      notify();
+      return;
+    }
     if (data.type === "failed") {
       faulted = true;
       message = `Sound could not start: ${data.reason ?? "unknown reason"}`;
@@ -475,16 +510,14 @@ export function createFlightAudio(options: FlightAudioOptions): FlightAudioHandl
       // The core's counters are event tallies, not CPU timers, so they can
       // never become a DSP p95. They surface faults, and nothing more.
       const nonFinite = (data.values[12] ?? 0) > 0;
-      // The tire cue alone already runs at the cheapest tier; there is nothing to drop to.
-      const action = engineWanted()
+      // Only Auto adapts to output load. A manual quality holds the pilot's
+      // selected implementation even through transient page-loading stalls.
+      const action = engineWanted() && settings.requested === "auto"
         ? fallback?.observe({ timeMs: now(), dspMs: null, underruns: readUnderrunCounter(context), fault: false })
         : null;
       if (action?.kind === "drop") {
-        // sound.md §6: a downgrade persists until an explicit re-test.
-        options.settings.update({
-          requested: action.tier, downgradedFrom: settings.downgradedFrom ?? settings.requested,
-        });
-        settings = options.settings.settings;
+        // Keep the selected preference intact: loaded quality is a runtime
+        // fact, and a transient startup stall must not become a saved Off.
         message = `Sound dropped to ${action.tier}: ${action.reason}`;
         sync(false);
       } else if (action) {
@@ -560,6 +593,17 @@ export function createFlightAudio(options: FlightAudioOptions): FlightAudioHandl
       return;
     }
     context = current;
+    current.onstatechange = () => {
+      if (disposed || context !== current) return;
+      if (current.state === "closed") {
+        generation += 1;
+        teardownGraph();
+      }
+      gestureLocked = !held && wantsGraph() && context?.state !== "running";
+      if (gestureLocked) armUnlock(); else disarmUnlock();
+      refreshStats();
+      notify();
+    };
     void resumeContext();
 
     try {
@@ -648,12 +692,17 @@ export function createFlightAudio(options: FlightAudioOptions): FlightAudioHandl
     },
 
     setQuality(quality) {
-      if (disposed || quality === settings.requested) return;
-      options.settings.update({ requested: quality, downgradedFrom: null });
-      settings = options.settings.settings;
+      if (disposed) return;
+      if (quality !== settings.requested || settings.downgradedFrom !== null) {
+        options.settings.update({ requested: quality, downgradedFrom: null });
+        settings = options.settings.settings;
+      }
       // An explicit choice is the re-test sound.md §1 asks for: it clears the
       // shed level and the upgrade lockout together.
       fallback?.retest(requestedTier(), now());
+      faulted = false;
+      message = null;
+      handle.beginEpoch();
       sync(inGesture());
       refreshStats();
       notify();
@@ -677,6 +726,9 @@ export function createFlightAudio(options: FlightAudioOptions): FlightAudioHandl
       settings = next;
       if (tierChanged) {
         fallback?.retest(requestedTier(), now());
+        faulted = false;
+        message = null;
+        handle.beginEpoch();
         sync(inGesture());
       } else {
         sendGains();
@@ -687,12 +739,22 @@ export function createFlightAudio(options: FlightAudioOptions): FlightAudioHandl
 
     retest() {
       if (disposed) return;
-      if (settings.downgradedFrom) {
-        options.settings.update({ requested: settings.downgradedFrom, downgradedFrom: null });
-        settings = options.settings.settings;
-      }
+      // Older saved records replaced the request on downgrade. Restore those
+      // on explicit retry, while new runtime downgrades leave it untouched.
+      options.settings.update({
+        enabled: true, requested: settings.downgradedFrom ?? settings.requested, downgradedFrom: null,
+      });
+      settings = options.settings.settings;
+      faulted = false;
       fallback?.retest(requestedTier(), now());
       message = null;
+      handle.beginEpoch();
+      if (context && !processorReady) {
+        // Retry also replaces a stalled fetch, module load or worklet startup.
+        // Its eventual completion belongs to the retired generation.
+        generation += 1;
+        teardownGraph();
+      }
       sync(inGesture());
       refreshStats();
       notify();
@@ -879,13 +941,19 @@ export function createFlightAudio(options: FlightAudioOptions): FlightAudioHandl
         suspendTimer = setTimeout(() => {
           suspendTimer = null;
           if (held && context?.state === "running") {
-            void context.suspend().catch(() => { /* The tier is already Off. */ });
+            const current = context;
+            void current.suspend().then(() => {
+              // Suspension can finish after a loading hold has already ended.
+              // Resume that same context once the pending suspend settles.
+              if (!disposed && context === current && !held && wantsGraph()) void resumeContext();
+            }).catch(() => { /* The tier is already Off. */ });
           }
         }, suspendDelayMs);
       } else if (wantsGraph()) {
         // Every hold is a discontinuity: the queued snapshots are from before
         // the gap and would otherwise replay as a stale backlog.
         handle.beginEpoch();
+        sync(false);
         void resumeContext();
       }
       refreshStats();
@@ -903,7 +971,8 @@ export function createFlightAudio(options: FlightAudioOptions): FlightAudioHandl
       node?.port.postMessage({ type: "reset" });
     },
 
-    isEngineActive: () => !disposed && adapter !== null && node !== null && engineWanted() && adapter.diagnostics.telemetryAvailable === true,
+    isEngineActive: () => !disposed && adapter !== null && node !== null && engineWanted()
+      && effectiveTier() !== "off" && adapter.diagnostics.telemetryAvailable === true,
 
     async installBank() {
       // V2 contains full recordings, not defined residuals. Playing them over

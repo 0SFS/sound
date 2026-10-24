@@ -7,7 +7,7 @@
 
 namespace osfs_audio {
 
-constexpr int kSnapshotVersion = 4;
+constexpr int kSnapshotVersion = 5;
 
 // AUDIO_SNAPSHOT_FIELDS
 enum SnapshotSlot {
@@ -40,6 +40,7 @@ enum SnapshotSlot {
   kAugmentation,
   kSourceAxisX, kSourceAxisY, kSourceAxisZ,
   kAfterburnerBurnedFuelFlowKgSec,
+  kEngineRpm, kPropellerRpm, kShaftPowerHp,
 
   kSnapshotSize,
 };
@@ -60,6 +61,9 @@ enum Availability {
   kAvailAugmentation = 1 << 10,
   kAvailSourceAxis = 1 << 11,
   kAvailAfterburnerBurnedFuel = 1 << 12,
+  kAvailEngineRpm = 1 << 13,
+  kAvailPropellerRpm = 1 << 14,
+  kAvailShaftPower = 1 << 15,
 };
 // END AVAILABILITY
 

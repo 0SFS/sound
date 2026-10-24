@@ -19,6 +19,10 @@ enum AcousticProfileSlot {
   kProfileHighFineMixGain, kProfileHighFineMixHz, kProfileHighShockGain, kProfileHighShockHz,
   kProfileHighRearMixDirectivity, kProfileHighShockDirectivity,
   kProfileHighCockpitGain, kProfileHighCockpitHz,
+  kProfileVoiceKind,
+  kProfileCylinders, kProfileStrokeCycle, kProfilePropellerBlades, kProfileRatedRpm, kProfileRatedPowerHp,
+  kProfileFiringGain, kProfilePropellerGain, kProfileMechanicalGain, kProfileExhaustNoiseGain, kProfilePropellerNoiseGain,
+  kProfilePistonOutputGain, kProfilePistonCockpitGain, kProfilePistonCockpitHz,
   kProfileSize,
 };
 // END ACOUSTIC_PROFILE_FIELDS
@@ -30,6 +34,7 @@ struct AcousticProfile {
     0.30, 0.30, 0.10, 0.55, 900.0, 1800.0, 0.28,
     800.0, 5200.0, 0.42, 90.0, 400.0, 0.55, 0.9, 0.0, 6000.0,
     0.16, 4200.0, 0.0, 1500.0, 0.25, 0.0, 0.12589254117941673, 1400.0,
+    0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
   };
 
   bool set(const double* input) {
@@ -37,6 +42,22 @@ struct AcousticProfile {
     for (int i = 0; i < kProfileSize; ++i) {
       if (!std::isfinite(input[i]) || input[i] < 0.0 || input[i] > 100000.0) return false;
     }
+    if (input[kProfileVoiceKind] == 1.0) {
+      const double cylinders = input[kProfileCylinders], blades = input[kProfilePropellerBlades];
+      if (cylinders < 1.0 || cylinders > 16.0 || cylinders != std::floor(cylinders)
+          || blades < 1.0 || blades > 8.0 || blades != std::floor(blades)
+          || (input[kProfileStrokeCycle] != 2.0 && input[kProfileStrokeCycle] != 4.0)
+          || input[kProfileRatedRpm] < 100.0 || input[kProfileRatedRpm] > 10000.0
+          || input[kProfileRatedPowerHp] < 1.0 || input[kProfilePistonCockpitGain] > 1.0
+          || input[kProfilePistonCockpitHz] < 20.0 || input[kProfilePistonCockpitHz] > 20000.0) return false;
+      for (int i : {kProfileFiringGain, kProfilePropellerGain, kProfileMechanicalGain,
+                    kProfileExhaustNoiseGain, kProfilePropellerNoiseGain, kProfilePistonOutputGain}) {
+        if (input[i] > 16.0) return false;
+      }
+      for (int i = 0; i < kProfileSize; ++i) values[i] = input[i];
+      return true;
+    }
+    if (input[kProfileVoiceKind] != 0.0) return false;
     if (input[kProfileIdleN1Pct] >= 100.0 || input[kProfileIdleN1SpanPct] <= 0.0
         || input[kProfileIdleN1SpanPct] > 100.0 || input[kProfileThrustReferenceLbf] < 1.0
         || input[kProfileFuelReferencePps] <= 0.0 || input[kProfileFanMix] > 1.0) return false;

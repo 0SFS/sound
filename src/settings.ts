@@ -34,9 +34,8 @@ const all = <T extends { tab: string; section: string }>(home: T) => ({ ...home,
 const within = (min: number, max: number) => () => ({ min, max });
 
 export const SOUND_PARAMETERS = [
-  // Sound: the tiers are separate synthesis engines, so the tier is a choice
-  // (docs/sound.md). A stored preference never restores louder sound than the
-  // pilot last heard, and a downgrade persists until an explicit re-test.
+  // Sound tiers are a discrete choice, drawn as one shared segmented slider.
+  // Manual tiers stay selected; Auto's live fallback never overwrites the choice.
   {
     id: "osfs.sound.enabled",
     label: "Sound",
@@ -52,7 +51,7 @@ export const SOUND_PARAMETERS = [
   {
     id: "osfs.sound.quality",
     label: "Sound tier",
-    description: "Which synthesis engine runs; Auto chooses the highest supported tier, with live overload fallback and editable resource limits.",
+    description: "Low, Med and High hold the selected quality. Auto chooses the highest supported tier and can lower it after overload. Force on or Retry sound restarts audio without reloading.",
     unit: "none",
     kind: "choice",
     choices: [
@@ -116,7 +115,7 @@ export const SOUND_PARAMETERS = [
   {
     id: "osfs.sound.downgradedFrom",
     label: "Downgraded from",
-    description: "Set when a fallback dropped the tier, recording what was asked for; cleared only by Re-test.",
+    description: "A saved downgrade from an older version; Force on or Retry sound restores the original request. Current Auto fallback keeps the saved quality unchanged.",
     unit: "none",
     kind: "choice",
     choices: [

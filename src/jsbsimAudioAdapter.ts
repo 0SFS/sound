@@ -68,6 +68,10 @@ export interface AudioAdapterReading {
   augmentation: boolean;
   /** Native actually burned reheat fuel; unavailable/invalid thermal state is NaN. */
   afterburnerBurnedFuelFlowKgSec?: number;
+  /** Native piston shaft observations; absent for other engine schemas, NaN when unavailable. */
+  engineRpm?: number;
+  propellerRpm?: number;
+  shaftPowerHp?: number;
   /** Native thruster's exhaust axis in the aircraft visual frame; NaNs mean unavailable. */
   sourceAxis?: [number, number, number];
 }
@@ -75,8 +79,8 @@ export interface AudioAdapterReading {
 /**
  * Combustion decision.
  *
- * sound.md §3 is explicit that native `set-running` must not gate ignition, and
- * the recorded start trace shows why: fuel burns for 14.5 s of a cold start
+ * For turbines, sound.md §3 is explicit that native `set-running` must not
+ * gate ignition: fuel burns for 14.5 s of a recorded cold start
  * while `set-running` is still 0. Fuel flow is the signal that actually tracks
  * the burner, so it decides; `running` only ever adds confidence.
  *
@@ -84,12 +88,19 @@ export interface AudioAdapterReading {
  * value is trace-led for SF50; a real F135 cold start also verifies dry
  * motoring and fueled lightoff before running. F135 abort/relight remains
  * unvalidated.
+ * Piston engines instead use native running: fuel can be pumped while the
+ * ignition is off, so its flow alone does not establish combustion.
  * `combustionSource` reports which native signal produced the answer.
  */
 export function decideCombustion(input: {
   fuelFlowAvailable: boolean; fuelFlowPps: number;
   runningAvailable: boolean; running: boolean;
-}, minimumFuelFlowPps: number): { combustion: boolean; source: CombustionSource } {
+}, minimumFuelFlowPps: number,
+rule: EngineAcousticDefinition["telemetry"]["combustion"]["rule"] = "fuel-flow-or-running",
+): { combustion: boolean; source: CombustionSource } {
+  if (rule === "running") return input.runningAvailable
+    ? { combustion: input.running, source: "running-only" }
+    : { combustion: false, source: "unavailable" };
   if (input.fuelFlowAvailable) {
     const burning = Number.isFinite(input.fuelFlowPps) && input.fuelFlowPps > minimumFuelFlowPps;
     return {
@@ -150,7 +161,8 @@ export function createJsbsimAudioAdapter(sdk: JSBSimSdk, options: AudioAdapterOp
     throw new Error(`Invalid native engine sound installation ${installation.id}`);
   }
   const schema = definition.telemetry;
-  if (schema.combustion.rule !== "fuel-flow-or-running" || !Number.isFinite(schema.combustion.minimumFuelFlowPps)
+  if (!["fuel-flow-or-running", "running"].includes(schema.combustion.rule)
+    || !Number.isFinite(schema.combustion.minimumFuelFlowPps)
     || schema.combustion.minimumFuelFlowPps < 0) throw new Error(`Unsupported combustion interpretation in ${schema.id}`);
   const paths: Partial<Record<AudioField, string>> = { ...FLIGHT_PROPERTIES };
   for (const [field, template] of Object.entries(schema.paths)) {
@@ -232,7 +244,7 @@ export function createJsbsimAudioAdapter(sdk: JSBSimSdk, options: AudioAdapterOp
   const combustionProbe = decideCombustion({
     fuelFlowAvailable: available("fuelFlowPps"), fuelFlowPps: at("fuelFlowPps"),
     runningAvailable: available("running"), running: at("running") > 0.5,
-  }, schema.combustion.minimumFuelFlowPps);
+  }, schema.combustion.minimumFuelFlowPps, schema.combustion.rule);
   const diagnostics: AudioAdapterDiagnostics = {
     missing: fields.filter(field => !has[field] && field !== "augmentation"
       && field !== "thermalValid" && field !== "afterburnerBurnedFuelFlowKgSec"
@@ -247,6 +259,9 @@ export function createJsbsimAudioAdapter(sdk: JSBSimSdk, options: AudioAdapterOp
     kias: Number.NaN, gearNorm: Number.NaN, flapNorm: Number.NaN,
     velocity: [Number.NaN, Number.NaN, Number.NaN], soundSpeedMps: Number.NaN, augmentation: false,
     afterburnerBurnedFuelFlowKgSec: Number.NaN,
+    ...(schema.paths.engineRpm ? { engineRpm: Number.NaN } : {}),
+    ...(schema.paths.propellerRpm ? { propellerRpm: Number.NaN } : {}),
+    ...(schema.paths.shaftPowerHp ? { shaftPowerHp: Number.NaN } : {}),
     sourceAxis: [Number.NaN, Number.NaN, Number.NaN],
   };
   let disposed = false;
@@ -260,6 +275,9 @@ export function createJsbsimAudioAdapter(sdk: JSBSimSdk, options: AudioAdapterOp
       let availability = 0;
       availability |= bit("n1Pct", AVAILABILITY.N1);
       availability |= bit("n2Pct", AVAILABILITY.N2);
+      availability |= bit("engineRpm", AVAILABILITY.ENGINE_RPM);
+      availability |= bit("propellerRpm", AVAILABILITY.PROPELLER_RPM);
+      availability |= bit("shaftPowerHp", AVAILABILITY.SHAFT_POWER);
       availability |= bit("thrustLbf", AVAILABILITY.THRUST);
       availability |= bit("fuelFlowPps", AVAILABILITY.FUEL_FLOW);
       availability |= bit("running", AVAILABILITY.RUNNING);
@@ -279,7 +297,7 @@ export function createJsbsimAudioAdapter(sdk: JSBSimSdk, options: AudioAdapterOp
       const decision = decideCombustion({
         fuelFlowAvailable: (availability & AVAILABILITY.FUEL_FLOW) !== 0, fuelFlowPps,
         runningAvailable: (availability & AVAILABILITY.RUNNING) !== 0, running,
-      }, schema.combustion.minimumFuelFlowPps);
+      }, schema.combustion.minimumFuelFlowPps, schema.combustion.rule);
       if (decision.source !== "unavailable") availability |= AVAILABILITY.COMBUSTION;
       diagnostics.telemetryAvailable = requiredAvailable();
       diagnostics.combustionSource = decision.source;
@@ -289,6 +307,9 @@ export function createJsbsimAudioAdapter(sdk: JSBSimSdk, options: AudioAdapterOp
       reading.availability = availability;
       reading.n1Pct = at("n1Pct");
       reading.n2Pct = at("n2Pct");
+      if (schema.paths.engineRpm) reading.engineRpm = at("engineRpm");
+      if (schema.paths.propellerRpm) reading.propellerRpm = at("propellerRpm");
+      if (schema.paths.shaftPowerHp) reading.shaftPowerHp = at("shaftPowerHp");
       reading.thrustLbf = at("thrustLbf");
       reading.fuelFlowPps = fuelFlowPps;
       reading.throttleNorm = at("throttleNorm");
@@ -349,6 +370,9 @@ export function toSnapshot(
       | (pose.poseValid && pose.sourceAxisValid ? AVAILABILITY.SOURCE_AXIS : 0),
     n1Pct: reading.n1Pct,
     n2Pct: reading.n2Pct,
+    engineRpm: reading.engineRpm,
+    propellerRpm: reading.propellerRpm,
+    shaftPowerHp: reading.shaftPowerHp,
     thrustLbf: reading.thrustLbf,
     fuelFlowPps: reading.fuelFlowPps,
     throttleNorm: reading.throttleNorm,

@@ -1,4 +1,4 @@
-import { Resettable } from "foss-earth/shell";
+import { ChoiceTrack, Resettable } from "foss-earth/shell";
 import type { FlightAudioStatus } from "./createFlightAudio";
 import { AVAILABILITY_LABELS, type TierId } from "./audioQuality";
 import {
@@ -17,6 +17,14 @@ const percent = (value: number): string => Number.isFinite(value) ? `${value.toF
 
 /** Shows native engine state, so "the engine went quiet" can be told apart from a sound fault. */
 function engineLine(engine: NonNullable<FlightAudioStatus["engine"]>): string {
+  if (engine.kind === "piston") {
+    const rpm = (value: number | undefined): string => value !== undefined && Number.isFinite(value)
+      ? `${Math.round(value)} rpm` : "n/a";
+    const state = engine.combustion ? "burning" : (engine.engineRpm ?? 0) > 1 ? "turning, not burning" : "stopped";
+    const power = engine.shaftPowerHp !== undefined && Number.isFinite(engine.shaftPowerHp)
+      ? `${Math.round(engine.shaftPowerHp)} hp` : "n/a";
+    return `Engine telemetry: ${state} · engine ${rpm(engine.engineRpm)} · propeller ${rpm(engine.propellerRpm)} · power ${power}`;
+  }
   const turning = (Number.isFinite(engine.n1Pct) && engine.n1Pct > 1) || (Number.isFinite(engine.n2Pct) && engine.n2Pct > 1);
   const state = engine.combustion
     ? "burning"
@@ -32,6 +40,11 @@ const COMBUSTION_SOURCE_LABELS: Record<string, string> = {
   "running-only": "the engine running flag only",
   unavailable: "nothing (no combustion signal)",
 };
+
+const HOLD_LABELS = {
+  pause: "paused", background: "page hidden", loading: "flight loading",
+  fault: "flight fault", reset: "resetting flight",
+} as const;
 
 /**
  * Only concrete browser, renderer or asset failures belong in normal controls.
@@ -59,6 +72,7 @@ export function SoundSettingsPanel({ state, onAction }: {
   const { settings } = state;
   const audible = state.mode === "sound" && state.effective !== "off" && !state.gestureLocked;
   const requestedReason = qualityOption(state, settings.requested).reason;
+  const retryQuality = settings.downgradedFrom ?? settings.requested;
   return (
     <fieldset className="flight-panel__fieldset">
       <legend>Sound</legend>
@@ -66,33 +80,33 @@ export function SoundSettingsPanel({ state, onAction }: {
         onClick={() => onAction({ type: "enable", enabled: true })}>Enable sound</button>}
       {settings.enabled && <button className="flight-panel__command" type="button"
         onClick={() => onAction({ type: "enable", enabled: false })}>Turn sound off</button>}
-      <label className="flight-panel__field">
-        <span>Quality</span>
-        <Resettable parameter="osfs.sound.quality" name="Sound quality">
-          <select aria-label="Sound quality" value={settings.requested}
-            onChange={event => onAction({ type: "quality", quality: event.target.value as AudioQualityId })}>
-            {AUDIO_QUALITY_IDS.map(id => {
-              const option = qualityOption(state, id);
-              return <option key={id} value={id} disabled={option.disabled}>{option.label}</option>;
-            })}
-          </select>
-        </Resettable>
-      </label>
-      <p className="flight-panel__hint" role="status">
-        Requested {AUDIO_QUALITY_LABELS[settings.requested]} · Effective {tierLabel(state.effective)}
+      <ChoiceTrack heading="Sound quality" parameter="osfs.sound.quality"
+        choices={AUDIO_QUALITY_IDS.map(id => ({ id, label: AUDIO_QUALITY_LABELS[id],
+          unavailable: qualityOption(state, id).reason }))}
+        value={settings.requested}
+        onChange={quality => onAction({ type: "quality", quality: quality as AudioQualityId })}
+        help={<>Low, Med and High keep your selected quality. Auto can lower quality when audio overloads.
+          Use Force on or Retry sound to restart audio without reloading the page.</>} />
+      <p className="flight-panel__hint" role="status" aria-label="Sound playback status">
+        Selected {AUDIO_QUALITY_LABELS[settings.requested]} · Loaded {tierLabel(state.effective)}
+        {state.loading ? " · loading sound" : ""}
+        {state.gestureLocked ? " · waiting for a click or key press" : ""}
         {state.mode === "tire-only" ? " (tire cue only)" : ""}
-        {state.held ? " · held while paused or hidden" : ""}
+        {state.held ? ` · held${state.holdReasons.length ? `: ${state.holdReasons.map(reason => HOLD_LABELS[reason]).join(", ")}` : ""}` : ""}
+        {!state.held && !state.gestureLocked && !state.loading && state.contextState === "suspended"
+          ? " · suspended" : ""}
       </p>
+      {retryQuality !== "off" && <button className="flight-panel__command" type="button"
+        onClick={() => onAction({ type: "retest" })}>
+        {retryQuality === "auto" ? "Retry sound" : `Force ${AUDIO_QUALITY_LABELS[retryQuality]} on`}
+      </button>}
       {requestedReason && <p className="flight-panel__hint">{requestedReason}</p>}
       {state.message && <p className="flight-panel__hint" role="alert">{state.message}</p>}
       {settings.downgradedFrom && <>
         <p className="flight-panel__hint">
           Quality was lowered from {AUDIO_QUALITY_LABELS[settings.downgradedFrom]} after an overload and
-          stays lowered until you re-test.
+          can be restored with {retryQuality === "auto" ? "Retry sound" : `Force ${AUDIO_QUALITY_LABELS[retryQuality]} on`}.
         </p>
-        <button className="flight-panel__command" type="button" onClick={() => onAction({ type: "retest" })}>
-          Re-test {AUDIO_QUALITY_LABELS[settings.downgradedFrom]}
-        </button>
       </>}
       <label className="flight-panel__field">
         <span>Master volume · {percent(settings.masterVolume * 100)}</span>

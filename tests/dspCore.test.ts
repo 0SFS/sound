@@ -438,7 +438,7 @@ describe("DSP core, running the compiled WASM", () => {
   });
 
   it("plays the tire cue with no engine telemetry at all", async () => {
-    // A C172, or tire-only playback: no adapter, so no snapshot ever arrives.
+    // Tire-only playback has no engine adapter, so no snapshot ever arrives.
     const harness = await createDspHarness();
     harness.exports.osfs_audio_set_tier(TIER.low);
     harness.exports.osfs_audio_set_gains(1, 0, 1, 0, 0);

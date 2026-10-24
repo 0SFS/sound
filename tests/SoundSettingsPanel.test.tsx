@@ -24,7 +24,8 @@ function status(requested: AudioQualityId, overrides: Partial<FlightAudioStatus>
       off: tierAvailability("off", CAPABLE), low: tierAvailability("low", CAPABLE),
       med: tierAvailability("med", CAPABLE), high: tierAvailability("high", CAPABLE),
     },
-    stats: "Audio: low (requested auto)", transport: "port", sampleRateHz: 48_000, held: false,
+    stats: "Audio: low (requested auto)", transport: "port", sampleRateHz: 48_000, held: false, holdReasons: [],
+    loading: false, contextState: "running",
     settings: { ...DEFAULT_AUDIO_SETTINGS, enabled: true, requested }, readOnlyReason: null,
     engine: null, core: null, running: null, telemetry: null,
     ...overrides,
@@ -39,7 +40,11 @@ async function mount(state: FlightAudioStatus) {
   const onAction = vi.fn<(action: SoundAction) => void>();
   await act(async () => root.render(<SoundSettingsPanel state={state} onAction={onAction} />));
   const button = (text: string) => [...host.querySelectorAll("button")].find((item) => item.textContent?.includes(text));
-  return { host, onAction, button };
+  const quality = (value: AudioQualityId) => host.querySelector<HTMLInputElement>(
+    `[role="radiogroup"][aria-label="Sound quality"] input[type="radio"][value="${value}"]`,
+  )!;
+  const playback = () => host.querySelector<HTMLElement>('[role="status"][aria-label="Sound playback status"]')!;
+  return { host, onAction, button, quality, playback };
 }
 
 describe("sound settings panel", () => {
@@ -53,14 +58,29 @@ describe("sound settings panel", () => {
     expect(panel.host.textContent).not.toContain("uncalibrated");
   });
 
+  it("shows burning piston engine RPM, propeller RPM and shaft power without turbine gauges", async () => {
+    const panel = await mount(status("med", { engine: {
+      kind: "piston", n1Pct: NaN, n2Pct: NaN, fuelFlowPps: 0.012, combustion: true, running: true,
+      engineRpm: 2375.4, propellerRpm: 2375.4, shaftPowerHp: 137.6,
+    } }));
+    const telemetry = panel.host.querySelector('[aria-label="Engine telemetry"]')!;
+    expect(telemetry.textContent).toBe("Engine telemetry: burning · engine 2375 rpm · propeller 2375 rpm · power 138 hp");
+    expect(telemetry.textContent).not.toMatch(/N1|N2/);
+  });
+
+  it("shows a windmilling piston engine and unavailable native propeller RPM or power plainly", async () => {
+    const panel = await mount(status("med", { engine: {
+      kind: "piston", n1Pct: NaN, n2Pct: NaN, fuelFlowPps: 0.01, combustion: false, running: false,
+      engineRpm: 910, propellerRpm: NaN, shaftPowerHp: NaN,
+    } }));
+    const telemetry = panel.host.querySelector('[aria-label="Engine telemetry"]')!;
+    expect(telemetry.textContent).toBe("Engine telemetry: turning, not burning · engine 910 rpm · propeller n/a · power n/a");
+    expect(telemetry.textContent).not.toMatch(/N1|N2|NaN/);
+  });
+
   it.each(["med", "high"] as const)("sends %s the moment it is chosen, and asks for nothing more", async quality => {
     const panel = await mount(status("low"));
-    const select = panel.host.querySelector<HTMLSelectElement>('select[aria-label="Sound quality"]')!;
-    await act(async () => {
-      // React tracks the value; set it through the native setter so the change is seen.
-      Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value")!.set!.call(select, quality);
-      select.dispatchEvent(new Event("change", { bubbles: true }));
-    });
+    await act(async () => panel.quality(quality).click());
     expect(panel.onAction).toHaveBeenCalledWith({ type: "quality", quality });
     expect(panel.onAction).toHaveBeenCalledOnce();
   });
@@ -74,39 +94,86 @@ describe("sound settings panel", () => {
 
   it("shows accepted Med running with no testing switch or evidence warning", async () => {
     const panel = await mount(status("med", { effective: "med" }));
-    expect(panel.host.textContent).toMatch(/Requested Med · Effective Med/);
+    expect(panel.playback().textContent).toBe("Selected Med · Loaded Med");
     expect(panel.host.textContent).not.toMatch(/qualification evidence|Not yet validated/);
     expect(panel.button("anyway")).toBeUndefined();
     expect(panel.button("testing")).toBeUndefined();
   });
 
-  it("keeps accepted Low, Med and High selectable with plain quality labels", async () => {
+  it("groups all five quality steps in one track with plain labels and the saved selection", async () => {
     const panel = await mount(status("low"));
-    const options = [...panel.host.querySelectorAll<HTMLOptionElement>('select[aria-label="Sound quality"] option')];
-    const med = options.find((option) => option.value === "med")!;
-    const high = options.find((option) => option.value === "high")!;
-    expect(med.disabled).toBe(false);
-    expect(med.textContent).toBe("Med");
-    expect(high.disabled).toBe(false);
-    expect(high.textContent).toBe("High");
-    expect(options.find(option => option.value === "low")!.textContent).toBe("Low");
+    const tracks = panel.host.querySelectorAll('[role="radiogroup"][aria-label="Sound quality"]');
+    expect(tracks).toHaveLength(1);
+    expect(panel.host.querySelector("select")).toBeNull();
+    const options = [...tracks[0].querySelectorAll<HTMLInputElement>('input[type="radio"]')];
+    expect(options.map(option => option.value)).toEqual(["off", "low", "med", "high", "auto"]);
+    expect(options.map(option => option.closest("label")!.textContent)).toEqual(["Off", "Low", "Med", "High", "Auto"]);
+    expect(options.every(option => !option.disabled)).toBe(true);
+    expect(options.filter(option => option.checked).map(option => option.value)).toEqual(["low"]);
   });
 
-  it("requires no extra enable action for default-on sound waiting for browser activation", async () => {
+  it("lets default-on sound waiting for browser activation be forced on with a fresh gesture", async () => {
     const panel = await mount(status("med", { effective: "off", gestureLocked: true }));
     expect(panel.button("Enable sound")).toBeUndefined();
     expect(panel.button("Turn sound off")).toBeDefined();
+    expect(panel.playback().textContent).toBe("Selected Med · Loaded Off · waiting for a click or key press");
+    await act(async () => panel.button("Force Med on")!.click());
+    expect(panel.onAction.mock.calls).toEqual([[{ type: "retest" }]]);
+  });
+
+  it("offers a restart when sound is enabled but its selected implementation failed", async () => {
+    const panel = await mount(status("high", { effective: "off", mode: "off", message: "Sound could not load." }));
+    expect(panel.playback().textContent).toBe("Selected High · Loaded Off");
+    expect(panel.host.textContent).toContain("Sound could not load.");
+    await act(async () => panel.button("Force High on")!.click());
+    expect(panel.onAction.mock.calls).toEqual([[{ type: "retest" }]]);
+  });
+
+  it("keeps Auto retry available even when an implementation is already loaded", async () => {
+    const panel = await mount(status("auto", { effective: "low" }));
+    expect(panel.playback().textContent).toBe("Selected Auto · Loaded Low");
+    await act(async () => panel.button("Retry sound")!.click());
+    expect(panel.onAction.mock.calls).toEqual([[{ type: "retest" }]]);
+  });
+
+  it("can restore a legacy overload downgrade to Off using the original quality", async () => {
+    const panel = await mount(status("off", {
+      effective: "off", mode: "off",
+      settings: { ...DEFAULT_AUDIO_SETTINGS, enabled: true, requested: "off", downgradedFrom: "med" },
+    }));
+    expect(panel.quality("off").checked).toBe(true);
+    expect(panel.host.textContent).toContain("Quality was lowered from Med after an overload");
+    await act(async () => panel.button("Force Med on")!.click());
+    expect(panel.onAction.mock.calls).toEqual([[{ type: "retest" }]]);
+  });
+
+  it("does not offer a force or retry action for intentionally selected Off", async () => {
+    const panel = await mount(status("off", { effective: "off", mode: "off" }));
+    expect(panel.button("Force")).toBeUndefined();
+    expect(panel.button("Retry sound")).toBeUndefined();
+  });
+
+  it.each([
+    [{ loading: true, effective: "low" }, "Selected Med · Loaded Low · loading sound"],
+    [{ contextState: "suspended" }, "Selected Med · Loaded Low · suspended"],
+    [{ held: true, holdReasons: ["loading", "pause"], contextState: "suspended" }, "Selected Med · Loaded Low · held: flight loading, paused"],
+  ] as const)("shows the playback condition alongside selected and loaded quality: %s", async (overrides, expected) => {
+    const panel = await mount(status("med", overrides));
+    expect(panel.playback().textContent).toBe(expected);
   });
 
   it("preserves concrete capability and processor-fault messages", async () => {
     const state = status("high", { message: "Sound stopped after an audio processor fault." });
     state.availability.high = { state: "unsupported", reason: "The selected renderer has no High sound." };
     const panel = await mount(state);
-    const high = panel.host.querySelector<HTMLOptionElement>('option[value="high"]')!;
+    const high = panel.quality("high");
     expect(high.disabled).toBe(true);
-    expect(high.textContent).toBe("High — Unsupported on this device");
+    expect(high.closest("label")!.textContent).toBe("High");
+    expect(high.closest("label")!.title).toBe("The selected renderer has no High sound.");
     expect(panel.host.textContent).toContain("The selected renderer has no High sound");
     expect(panel.host.textContent).toContain("audio processor fault");
+    await act(async () => high.click());
+    expect(panel.onAction).not.toHaveBeenCalled();
   });
 
   it("sends airframe wind volume on its own", async () => {

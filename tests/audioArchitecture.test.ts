@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { getAircraftAudioInstallation, resolveAircraftAudioInstallation, type AircraftAudioInstallation } from "../src/aircraftAudioProfiles";
 import { AUDIO_RENDERERS, getAudioRenderer, rendererAdmission } from "../src/audioRendererRegistry";
-import { FJ33_ACOUSTICS, FJ33_DEFINITION, F135_DEFINITION, getEngineAcousticDefinition } from "../src/engineAcousticDefinitions";
+import { FJ33_ACOUSTICS, FJ33_DEFINITION, F135_DEFINITION, IO320_DEFINITION, IO320_ACOUSTICS, getEngineAcousticDefinition } from "../src/engineAcousticDefinitions";
 
 const installation = (indices: number[], definitionId = FJ33_DEFINITION.id): AircraftAudioInstallation => ({
   engineSources: indices.map(index => ({ id: `exhaust-${index}`, engineIndex: index,
@@ -9,6 +9,18 @@ const installation = (indices: number[], definitionId = FJ33_DEFINITION.id): Air
 });
 
 describe("engine definition, aircraft installation and renderer admission", () => {
+  it("admits C172 only through its explicit IO320 piston installation and typed native schema", () => {
+    const result = resolveAircraftAudioInstallation(getAircraftAudioInstallation("cessna-172"));
+    expect(result).toMatchObject({ supported: true, source: { definition: IO320_DEFINITION }, renderer: {
+      id: "procedural-piston-v1", engineClasses: ["piston"], telemetrySchemaIds: ["jsbsim-piston-v1"],
+    } });
+    expect(rendererAdmission({ ...IO320_DEFINITION, rendererId: "procedural-jet-v1" }).supported).toBe(false);
+    expect(rendererAdmission({ ...FJ33_DEFINITION, rendererId: "procedural-piston-v1" }).supported).toBe(false);
+    for (const patch of [{ cylinders: 0 }, { cylinders: 3.5 }, { strokeCycle: 3 }, { propellerBlades: 0 },
+      { ratedRpm: 0 }, { ratedPowerHp: 0 }, { firingGain: 17 }, { pistonCockpitGain: 2 }]) {
+      expect(rendererAdmission({ ...IO320_DEFINITION, parameters: { ...IO320_ACOUSTICS, ...patch } }).supported).toBe(false);
+    }
+  });
   it("keeps distinct manufacturer families and data while selecting the prototype renderer explicitly", () => {
     expect(FJ33_DEFINITION.manufacturerFamily).not.toBe(F135_DEFINITION.manufacturerFamily);
     expect(FJ33_DEFINITION.id).not.toBe(F135_DEFINITION.id);

@@ -37,6 +37,7 @@ class FakeAudioContext {
   state: AudioContextState = "suspended";
   destination = {};
   audioWorklet = { addModule: vi.fn(async () => undefined) };
+  onstatechange: (() => void) | null = null;
   resume = vi.fn(async () => { this.state = "running"; });
   suspend = vi.fn(async () => { this.state = "suspended"; });
   close = vi.fn(async () => { log.push("context.close"); this.state = "closed"; });
@@ -114,7 +115,9 @@ function bank(bands: readonly AudioBankInstallBand[]): AudioBankInstallation {
 
 async function booted(count = 1): Promise<FakeWorkletNode> {
   await vi.waitFor(() => expect(FakeWorkletNode.instances).toHaveLength(count));
-  return FakeWorkletNode.instances[count - 1];
+  const node = FakeWorkletNode.instances[count - 1];
+  node.port.deliver({ type: "ready" });
+  return node;
 }
 
 beforeEach(() => {
@@ -228,6 +231,33 @@ describe("flight audio lifecycle (synthetic fakes)", () => {
     expect(node.port.last("profile")).toEqual({ type: "profile", values: acousticProfileValues() });
   });
 
+  it("admits C172 piston sound and transports native crankshaft, propeller and power readings", async () => {
+    const { audio } = create({ stored: { requested: "high" } });
+    const { adapter, reading } = fakeAdapter();
+    adapter.diagnostics.profile = getAircraftAudioProfile("cessna-172");
+    Object.assign(reading, {
+      n1Pct: Number.NaN, n2Pct: Number.NaN, engineRpm: 2450, propellerRpm: 2440, shaftPowerHp: 112,
+      fuelFlowPps: 0.015, combustion: true, running: true,
+      availability: AVAILABILITY.ENGINE_RPM | AVAILABILITY.PROPELLER_RPM | AVAILABILITY.SHAFT_POWER
+        | AVAILABILITY.FUEL_FLOW | AVAILABILITY.COMBUSTION | AVAILABILITY.RUNNING,
+    });
+    audio.attachAdapter(adapter);
+    audio.setEnabled(true);
+    const node = await booted();
+    expect(node.options.processorOptions.initial).toMatchObject({
+      tier: 3, profile: acousticProfileValues(adapter.diagnostics.profile),
+    });
+    audio.publishStep();
+    const snapshot = new Float64Array(node.port.last("batch")!.buffer as ArrayBuffer);
+    expect(snapshot[AUDIO_BATCH_HEADER + AUDIO_SNAPSHOT_SLOT.engineRpm]).toBe(2450);
+    expect(snapshot[AUDIO_BATCH_HEADER + AUDIO_SNAPSHOT_SLOT.propellerRpm]).toBe(2440);
+    expect(snapshot[AUDIO_BATCH_HEADER + AUDIO_SNAPSHOT_SLOT.shaftPowerHp]).toBe(112);
+    expect(audio.getStatus()).toMatchObject({ requested: "high", effective: "high", message: null,
+      engine: { kind: "piston", engineRpm: 2450, propellerRpm: 2440, shaftPowerHp: 112,
+        combustion: true, running: true } });
+    expect(audio.isEngineActive()).toBe(true);
+  });
+
   it("allocates nothing when the saved preference is off", () => {
     const { audio } = create();
     expect(FakeAudioContext.instances).toHaveLength(0);
@@ -315,6 +345,67 @@ describe("flight audio lifecycle (synthetic fakes)", () => {
     expect(FakeWorkletNode.instances).toHaveLength(0);
     expect(FakeAudioContext.instances[0].close).toHaveBeenCalled();
     expect(audio.getStatus().effective).toBe("off");
+  });
+
+  it("reports loading until the worklet confirms successful initialization", async () => {
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const { audio } = create({ loadWasm: async () => { await gate; return wasm; } });
+    audio.setEnabled(true);
+    expect(audio.getStatus()).toMatchObject({ loading: true, effective: "off", contextState: "running" });
+    release();
+    await vi.waitFor(() => expect(FakeWorkletNode.instances).toHaveLength(1));
+    expect(audio.getStatus()).toMatchObject({ loading: true, effective: "off" });
+    FakeWorkletNode.instances[0].port.deliver({ type: "ready" });
+    expect(audio.getStatus()).toMatchObject({ loading: false, effective: "med" });
+  });
+
+  it("retries a failed slow load without reloading the page", async () => {
+    const loadWasm = vi.fn().mockRejectedValueOnce(new Error("temporary load failure")).mockResolvedValue(wasm);
+    const { audio } = create({ loadWasm });
+    audio.setEnabled(true);
+    await vi.waitFor(() => expect(audio.getStatus().message).toMatch(/temporary load failure/));
+    expect(audio.getStatus()).toMatchObject({ loading: false, effective: "off", contextState: null });
+    audio.retest();
+    await booted();
+    expect(audio.getStatus()).toMatchObject({ loading: false, enabled: true, effective: "med", message: null });
+    expect(loadWasm).toHaveBeenCalledTimes(2);
+  });
+
+  it("replaces a stalled startup and ignores its late successful load", async () => {
+    let release!: (bytes: BufferSource) => void;
+    const pending = new Promise<BufferSource>(resolve => { release = resolve; });
+    const loadWasm = vi.fn().mockReturnValueOnce(pending).mockResolvedValue(wasm);
+    const { audio } = create({ loadWasm });
+    audio.setEnabled(true);
+    const abandoned = FakeAudioContext.instances[0];
+    expect(audio.getStatus().loading).toBe(true);
+    audio.retest();
+    expect(abandoned.close).toHaveBeenCalledOnce();
+    expect(FakeAudioContext.instances).toHaveLength(2);
+    const replacement = await booted();
+    release(wasm);
+    await new Promise(resolve => setTimeout(resolve, 100));
+    expect(loadWasm).toHaveBeenCalledTimes(2);
+    expect(FakeWorkletNode.instances).toHaveLength(1);
+    expect(replacement.disconnect).not.toHaveBeenCalled();
+    expect(FakeAudioContext.instances[1].close).not.toHaveBeenCalled();
+    expect(audio.getStatus()).toMatchObject({ loading: false, effective: "med", message: null });
+  });
+
+  it("replaces a worklet that never acknowledged readiness, ignoring its late messages", async () => {
+    const { audio } = create();
+    audio.setEnabled(true);
+    await vi.waitFor(() => expect(FakeWorkletNode.instances).toHaveLength(1));
+    const abandoned = FakeWorkletNode.instances[0];
+    expect(audio.getStatus()).toMatchObject({ loading: true, effective: "off" });
+    audio.retest();
+    const replacement = await booted(2);
+    abandoned.port.deliver({ type: "ready" });
+    abandoned.port.deliver({ type: "failed", reason: "late old failure" });
+    expect(abandoned.disconnect).toHaveBeenCalledOnce();
+    expect(replacement.disconnect).not.toHaveBeenCalled();
+    expect(audio.getStatus()).toMatchObject({ loading: false, effective: "med", message: null });
   });
 
   it("counts holds per reason, and a release opens a new epoch", async () => {
@@ -449,20 +540,52 @@ describe("flight audio lifecycle (synthetic fakes)", () => {
     expect(snapshot[AUDIO_BATCH_HEADER + AUDIO_SNAPSHOT_SLOT.availability] & (AVAILABILITY.SOURCE_AXIS | AVAILABILITY.POSE)).toBe(0);
   });
 
-  it("drops to Off on a processor fault and restarts only when the pilot switches sound again", async () => {
+  it("retries a processor fault at the same quality, without another fetch or page reload", async () => {
     const target = new EventTarget();
-    const { audio } = create({ unlockTarget: target });
+    const loadWasm = vi.fn(async () => wasm);
+    const { audio } = create({ unlockTarget: target, loadWasm });
     audio.setEnabled(true);
     const node = await booted();
+    audio.publishStep();
+    const previousEpoch = node.port.last("epoch")!.epoch as number;
     node.onprocessorerror?.();
     expect(audio.getStatus().effective).toBe("off");
     expect(audio.getStatus().message).toMatch(/processor fault/);
     target.dispatchEvent(new Event("pointerdown"));
     expect(FakeAudioContext.instances).toHaveLength(1);
-    audio.setEnabled(false);
-    audio.setEnabled(true);
+    audio.retest();
     expect(FakeAudioContext.instances).toHaveLength(2);
+    const replacement = await booted(2);
+    audio.publishStep();
+    expect(replacement.port.last("epoch")!.epoch).toBeGreaterThan(previousEpoch);
+    expect(audio.getStatus()).toMatchObject({ requested: "med", effective: "med", message: null });
+    expect(loadWasm).toHaveBeenCalledOnce();
+  });
+
+  it("recovers a worklet initialization failure when the same quality is explicitly selected", async () => {
+    const { audio } = create();
+    audio.setEnabled(true);
+    const node = await booted();
+    node.port.deliver({ type: "failed", reason: "initialization failed" });
+    expect(audio.getStatus()).toMatchObject({ requested: "med", effective: "off" });
+    audio.setQuality("med");
     await booted(2);
+    expect(audio.getStatus()).toMatchObject({ requested: "med", effective: "med", message: null });
+  });
+
+  it("recovers a processor fault when an imported setting changes the enabled quality", async () => {
+    const { audio, store } = create();
+    audio.setEnabled(true);
+    const node = await booted();
+    audio.publishStep();
+    const previousEpoch = node.port.last("epoch")!.epoch as number;
+    node.onprocessorerror?.();
+    store.update({ requested: "high" });
+    audio.followSettings();
+    const replacement = await booted(2);
+    audio.publishStep();
+    expect(replacement.port.last("epoch")!.epoch).toBeGreaterThan(previousEpoch);
+    expect(audio.getStatus()).toMatchObject({ requested: "high", effective: "high", message: null });
   });
 
   it.each(["cirrus-vision-jet", "f-35b"] as const)("runs procedural High for %s without installing a sample bank", async (aircraft) => {
@@ -544,7 +667,7 @@ describe("flight audio lifecycle (synthetic fakes)", () => {
     expect(dispose).toHaveBeenCalledOnce();
   });
 
-  it("drops a tier on a counted underrun and keeps the downgrade until re-test", async () => {
+  it("adapts Auto through Off without changing the saved selection, and retries in place", async () => {
     const { audio, store } = create({ stored: { requested: "auto" } });
     audio.setEnabled(true);
     const node = await booted();
@@ -554,25 +677,34 @@ describe("flight audio lifecycle (synthetic fakes)", () => {
     expect(audio.getStatus().stats).toMatch(/underruns 0 .*underrun counter not validated/);
     context.playbackStats.underrunEvents = 3;
     node.port.deliver({ type: "stats", values: new Array(20).fill(0) });
-    expect(store.settings).toMatchObject({ requested: "med", downgradedFrom: "auto" });
+    expect(store.settings).toMatchObject({ requested: "auto", downgradedFrom: null });
     expect(audio.getStatus().effective).toBe("med");
     context.playbackStats.underrunEvents = 6;
     node.port.deliver({ type: "stats", values: new Array(20).fill(0) });
-    expect(store.settings).toMatchObject({ requested: "low", downgradedFrom: "auto" });
+    expect(store.settings).toMatchObject({ requested: "auto", downgradedFrom: null });
     expect(audio.getStatus().effective).toBe("low");
     context.playbackStats.underrunEvents = 9;
     node.port.deliver({ type: "stats", values: new Array(20).fill(0) });
-    // Continued faults drop High → Med → Low → Off; no automatic upgrade.
-    expect(store.settings).toMatchObject({ requested: "off", downgradedFrom: "auto" });
+    // Auto retains its selection while the loaded implementation reaches Off.
+    expect(store.settings).toMatchObject({ requested: "auto", downgradedFrom: null });
+    expect(audio.getStatus()).toMatchObject({ requested: "auto", effective: "off" });
     expect(audio.getStatus().message).toMatch(/dropped to off: 3 output underruns were counted/);
-    expect(node.disconnect).toHaveBeenCalled();
+    expect(audio.isEngineActive()).toBe(false);
+    expect(node.port.last("tier")).toEqual({ type: "tier", tier: 0 });
+    expect(node.disconnect).not.toHaveBeenCalled();
+    const resets = node.port.ofType("reset").length;
     audio.retest();
     expect(store.settings).toMatchObject({ requested: "auto", downgradedFrom: null });
-    await booted(2);
+    expect(node.port.last("tier")).toEqual({ type: "tier", tier: 3 });
+    expect(node.port.ofType("reset")).toHaveLength(resets + 1);
+    expect(FakeWorkletNode.instances).toHaveLength(1);
+    // Counters from before the retry become a new baseline.
+    node.port.deliver({ type: "stats", values: new Array(20).fill(0) });
+    expect(audio.getStatus()).toMatchObject({ requested: "auto", effective: "high", message: null });
   });
 
-  it("drops the default Med to Low on a counted underrun, and Low keeps playing until re-test", async () => {
-    const { audio, store } = create();
+  it.each(["low", "med", "high"] as const)("holds explicit %s through output underruns", async quality => {
+    const { audio, store } = create({ stored: { requested: quality } });
     audio.setEnabled(true);
     const node = await booted();
     const context = FakeAudioContext.instances[0] as FakeAudioContext & { playbackStats: { underrunEvents: number } };
@@ -580,12 +712,30 @@ describe("flight audio lifecycle (synthetic fakes)", () => {
     node.port.deliver({ type: "stats", values: new Array(20).fill(0) });
     context.playbackStats.underrunEvents = 1;
     node.port.deliver({ type: "stats", values: new Array(20).fill(0) });
-    expect(store.settings).toMatchObject({ requested: "low", downgradedFrom: "med" });
-    expect(node.port.last("tier")).toEqual({ type: "tier", tier: 1 });
+    expect(store.settings).toMatchObject({ requested: quality, downgradedFrom: null });
+    expect(audio.getStatus()).toMatchObject({ requested: quality, effective: quality, message: null });
+    expect(node.port.last("tier")).toEqual({ type: "tier", tier: ["off", "low", "med", "high"].indexOf(quality) });
     expect(node.disconnect).not.toHaveBeenCalled();
+  });
+
+  it("keeps an independent tire cue audible when Auto silences engine sound", async () => {
+    const { audio } = create({ stored: { requested: "auto" } });
+    audio.setEnabled(true);
+    audio.setTireCue(true, 0.5);
+    const node = await booted();
+    const context = FakeAudioContext.instances[0] as FakeAudioContext & { playbackStats: { underrunEvents: number } };
+    context.playbackStats = { underrunEvents: 0 };
+    for (let count = 0; count <= 3; count += 1) {
+      context.playbackStats.underrunEvents = count;
+      node.port.deliver({ type: "stats", values: new Array(20).fill(0) });
+    }
+    expect(audio.getStatus()).toMatchObject({ requested: "auto", effective: "off" });
+    expect(node.port.last("tier")).toEqual({ type: "tier", tier: 1 });
+    expect(node.port.last("gains")).toMatchObject({ master: 1, engine: 0, airframe: 0, tire: 0.5 });
+    audio.setTireSlipWatts(300);
+    expect(node.port.last("tire")).toEqual({ type: "tire", watts: 300 });
     audio.retest();
-    expect(store.settings).toMatchObject({ requested: "med", downgradedFrom: null });
-    expect(node.port.last("tier")).toEqual({ type: "tier", tier: 2 });
+    expect(node.port.last("gains")).toMatchObject({ master: 2, engine: 0.8, airframe: 0.6, tire: 0.5 });
   });
 
   it("keeps the context running through a brief hold and suspends only when the hold persists", async () => {
@@ -600,6 +750,66 @@ describe("flight audio lifecycle (synthetic fakes)", () => {
     expect(context.suspend).not.toHaveBeenCalled();
     audio.setHeld(true, "pause");
     await vi.waitFor(() => expect(context.suspend).toHaveBeenCalledOnce());
+  });
+
+  it("resumes when a pending suspension finishes after the loading hold was released", async () => {
+    const { audio } = create({ suspendDelayMs: 1 });
+    audio.setEnabled(true);
+    const node = await booted();
+    const context = FakeAudioContext.instances[0];
+    let finishSuspend!: () => void;
+    context.suspend.mockImplementationOnce(() => new Promise<void>(resolve => {
+      finishSuspend = () => { context.state = "suspended"; resolve(); };
+    }));
+    audio.setHeld(true, "loading");
+    await vi.waitFor(() => expect(context.suspend).toHaveBeenCalledOnce());
+    audio.setHeld(false, "loading");
+    expect(context.state).toBe("running");
+    finishSuspend();
+    await vi.waitFor(() => expect(context.resume).toHaveBeenCalledTimes(2));
+    expect(audio.getStatus()).toMatchObject({ held: false, gestureLocked: false, contextState: "running" });
+    expect(node.port.last("tier")).toEqual({ type: "tier", tier: 2 });
+  });
+
+  it("uses a fresh gesture to recover browser-initiated suspension without rebuilding", async () => {
+    const target = new EventTarget();
+    const { audio } = create({ unlockTarget: target });
+    audio.setEnabled(true);
+    await booted();
+    const context = FakeAudioContext.instances[0];
+    context.state = "suspended";
+    context.onstatechange?.();
+    expect(audio.getStatus()).toMatchObject({ contextState: "suspended", gestureLocked: true });
+    target.dispatchEvent(new Event("pointerdown"));
+    await vi.waitFor(() => expect(audio.getStatus().gestureLocked).toBe(false));
+    expect(audio.getStatus().contextState).toBe("running");
+    expect(FakeWorkletNode.instances).toHaveLength(1);
+  });
+
+  it("recreates an unexpectedly closed context on the next normal gesture", async () => {
+    const target = new EventTarget();
+    const { audio } = create({ unlockTarget: target });
+    audio.setEnabled(true);
+    await booted();
+    const context = FakeAudioContext.instances[0];
+    context.state = "closed";
+    context.onstatechange?.();
+    expect(audio.getStatus()).toMatchObject({ effective: "off", gestureLocked: true, contextState: null });
+    target.dispatchEvent(new Event("keydown"));
+    await booted(2);
+    expect(audio.getStatus()).toMatchObject({ effective: "med", gestureLocked: false, contextState: "running" });
+  });
+
+  it("force-enables the selected sound while preserving active holds", async () => {
+    const { audio, store } = create({ stored: { requested: "high" } });
+    audio.setHeld(true, "loading");
+    audio.retest();
+    const node = await booted();
+    expect(store.settings).toMatchObject({ enabled: true, requested: "high" });
+    expect(audio.getStatus()).toMatchObject({ enabled: true, requested: "high", held: true, holdReasons: ["loading"] });
+    expect(node.port.last("tier")).toEqual({ type: "tier", tier: 0 });
+    audio.setHeld(false, "loading");
+    expect(node.port.last("tier")).toEqual({ type: "tier", tier: 3 });
   });
 
   it("silences only the tire cue on a tire hold", async () => {

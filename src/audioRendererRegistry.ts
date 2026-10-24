@@ -1,6 +1,6 @@
 import { audioDspWasmUrl, audioWorkletUrl } from "./audioAssets";
 import { AUDIO_SNAPSHOT_VERSION } from "./audioSnapshot";
-import { acousticProfileValues, type EngineAcousticDefinition } from "./engineAcousticDefinitions";
+import { acousticProfileValues, pistonProfileValues, type EngineAcousticDefinition } from "./engineAcousticDefinitions";
 
 /** 0sfs owns renderer selection; hardware class is independent of the binary. */
 export interface AudioRendererRegistration {
@@ -20,12 +20,17 @@ export interface AudioRendererRegistration {
 
 const PROCEDURAL_JET: AudioRendererRegistration = Object.freeze({
   id: "procedural-jet-v1", wasmUrl: audioDspWasmUrl, workletUrl: audioWorkletUrl,
-  processorName: "osfs-dsp", abi: { id: "osfs-audio-dynamics-v4", snapshotVersion: AUDIO_SNAPSHOT_VERSION },
+  processorName: "osfs-dsp", abi: { id: "osfs-audio-dynamics-v5", snapshotVersion: AUDIO_SNAPSHOT_VERSION },
   maxEngineSources: 1, telemetrySchemaIds: ["jsbsim-turbine-v1", "jsbsim-thermal-turbine-v1"], engineClasses: ["turbofan"] as const,
   acousticStatus: "approximate-unvalidated", highSynthesis: "procedural", encodeParameters: acousticProfileValues,
 });
+const PROCEDURAL_PISTON: AudioRendererRegistration = Object.freeze({
+  ...PROCEDURAL_JET, id: "procedural-piston-v1", engineClasses: ["piston"] as const,
+  telemetrySchemaIds: ["jsbsim-piston-v1"], encodeParameters: pistonProfileValues,
+});
 export const AUDIO_RENDERERS: Readonly<Record<string, AudioRendererRegistration>> = {
   [PROCEDURAL_JET.id]: PROCEDURAL_JET,
+  [PROCEDURAL_PISTON.id]: PROCEDURAL_PISTON,
 };
 export const getAudioRenderer = (id: string): AudioRendererRegistration | undefined =>
   Object.hasOwn(AUDIO_RENDERERS, id) ? AUDIO_RENDERERS[id] : undefined;
@@ -35,7 +40,7 @@ export function rendererAdmission(definition: EngineAcousticDefinition,
   { supported: true; renderer: AudioRendererRegistration } | { supported: false; reason: string } {
   const renderer = Object.hasOwn(renderers, definition.rendererId) ? renderers[definition.rendererId] : undefined;
   if (!renderer) return { supported: false, reason: `Audio renderer ${definition.rendererId} is not implemented.` };
-  if (renderer.abi.id !== "osfs-audio-dynamics-v4" || renderer.abi.snapshotVersion !== AUDIO_SNAPSHOT_VERSION) {
+  if (renderer.abi.id !== "osfs-audio-dynamics-v5" || renderer.abi.snapshotVersion !== AUDIO_SNAPSHOT_VERSION) {
     return { supported: false, reason: `Audio renderer ${renderer.id} requires an unsupported dynamics ABI.` };
   }
   if (!renderer.engineClasses.includes(definition.engineClass)) return { supported: false, reason: `Renderer ${renderer.id} does not implement ${definition.engineClass} engines.` };

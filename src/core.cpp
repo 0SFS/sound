@@ -15,6 +15,7 @@
 #include "primitives.h"
 #include "snapshot.h"
 #include "turbofan.h"
+#include "piston.h"
 
 #ifdef __EMSCRIPTEN__
 #include <emscripten/emscripten.h>
@@ -132,6 +133,8 @@ int gPartIndex = 0;
 double gIrSeconds = -1.0;
 
 TurbofanVoice gEngine;
+PistonVoice gPiston;
+bool gPistonActive = false;
 TireVoice gTire;
 GranularVoice gGrains;
 Dynamics gDynamics;
@@ -153,6 +156,7 @@ double gDelayBlend = 0.0;
 bool gDelayCrossfading = false;
 bool gDelaySeeded = false;
 Smoother gN1, gN2, gThrust, gFuel, gKias, gGear, gFlap, gExterior;
+Smoother gEngineRpm, gPropellerRpm, gShaftPower;
 Smoother gAugmentation;
 Smoother gAfterburnerVolumeSmooth;
 Smoother gSourceCosine, gSourceDirectionWeight;
@@ -260,6 +264,7 @@ void applyCaps() {
   }
 
   gEngine.setCaps(caps);
+  gPiston.setCaps(caps);
   gGrains.setCaps(grains, starts);
 
   if (irSeconds != gIrSeconds) {
@@ -308,6 +313,7 @@ void requestCaps() {
 
 void resetVoices() {
   gEngine.reset();
+  gPiston.reset();
   gTire.reset();
   gGrains.reset();
   gDynamics.reset();
@@ -318,7 +324,7 @@ void resetVoices() {
   for (int i = 0; i < kPartition; ++i) { gWetIn[i] = 0.0; gWetOut[i] = 0.0; }
   Smoother* smoothers[] = {&gN1, &gN2, &gThrust, &gFuel, &gKias, &gGear,
                            &gFlap, &gExterior, &gCombustion, &gSpatial, &gPan, &gAugmentation,
-                           &gSourceCosine, &gSourceDirectionWeight};
+                           &gSourceCosine, &gSourceDirectionWeight, &gEngineRpm, &gPropellerRpm, &gShaftPower};
   for (Smoother* s : smoothers) s->reset(0.0);
   gColourHz.reset(1200.0);
   gRangeFade.reset(1.0);
@@ -485,6 +491,8 @@ OSFS_EXPORT int osfs_audio_init(double sampleRate, int maxBlockFrames, unsigned 
   gAfterburnerVolume = 1.0;
   gMaxBlock = (maxBlockFrames > 0 && maxBlockFrames <= kMaxBlock) ? maxBlockFrames : kPartition;
   gEngine.configure(sampleRate, seed ? seed : 0x53463530u);
+  gPiston.configure(sampleRate, seed ? seed : 0x53463530u);
+  gPistonActive = false;
   gTire.configure(sampleRate, 0x74697265u);
   gGrains.configure(sampleRate, seed ^ 0x9e3779b9u);
   gDynamics.configure(sampleRate);
@@ -493,7 +501,7 @@ OSFS_EXPORT int osfs_audio_init(double sampleRate, int maxBlockFrames, unsigned 
   for (Smoother* s : {&gN1, &gN2, &gThrust, &gFuel, &gKias, &gGear, &gFlap,
                       &gExterior, &gCombustion, &gSpatial, &gPan, &gColourHz,
                       &gRangeFade, &gAugmentation, &gAfterburnerVolumeSmooth,
-                      &gSourceCosine, &gSourceDirectionWeight}) {
+                      &gSourceCosine, &gSourceDirectionWeight, &gEngineRpm, &gPropellerRpm, &gShaftPower}) {
     s->configure(sampleRate, kSmoothTau);
   }
   gIrSeconds = -1.0;
@@ -521,7 +529,12 @@ OSFS_EXPORT void osfs_audio_reset(void) {
 OSFS_EXPORT double* osfs_audio_profile_ptr(void) { return gProfileSetup.values; }
 OSFS_EXPORT int osfs_audio_profile_size(void) { return kProfileSize; }
 OSFS_EXPORT int osfs_audio_commit_profile(void) {
-  return gEngine.setProfile(gProfileSetup.values) ? 1 : 0;
+  AcousticProfile validated;
+  if (!validated.set(gProfileSetup.values)) return 0;
+  const bool piston = validated.at(kProfileVoiceKind) == 1.0;
+  const bool accepted = piston ? gPiston.setProfile(validated.values) : gEngine.setProfile(validated.values);
+  if (accepted) gPistonActive = piston;
+  return accepted ? 1 : 0;
 }
 
 OSFS_EXPORT void osfs_audio_set_tier(int tier) {
@@ -848,8 +861,15 @@ OSFS_EXPORT void osfs_audio_process(double blockStartFrame, int frames) {
     // Doppler is applied by the delay line below, so the voice generates at
     // base frequency and only uses the ratio to cull partials that would alias.
     double airframeNoise = 0.0;
-    double mono = gEngine.process(in, spatialTier ? doppler : 1.0, &airframeNoise) * gEngineGain
-        + airframeNoise * gAirframeGain;
+    PistonInput pistonIn;
+    pistonIn.engineRpm = gEngineRpm.process((availability & kAvailEngineRpm) ? clamp(interpolated[kEngineRpm], 0.0, 10000.0) : 0.0);
+    pistonIn.propellerRpm = gPropellerRpm.process((availability & kAvailPropellerRpm) ? clamp(interpolated[kPropellerRpm], 0.0, 10000.0) : 0.0);
+    pistonIn.powerHp = gShaftPower.process((availability & kAvailShaftPower) ? std::fmax(0.0, interpolated[kShaftPowerHp]) : 0.0);
+    pistonIn.combustion = in.combustion;
+    pistonIn.kias = in.kias; pistonIn.gear = in.gear; pistonIn.flap = in.flap;
+    const double source = gPistonActive ? gPiston.process(pistonIn, spatialTier ? doppler : 1.0, &airframeNoise)
+        : gEngine.process(in, spatialTier ? doppler : 1.0, &airframeNoise);
+    double mono = source * gEngineGain + airframeNoise * gAirframeGain;
 
     // Legacy test-bank storage remains an ABI capability, but recordings are
     // never mixed into procedural High. In particular, no grain can keep an
@@ -952,8 +972,10 @@ OSFS_EXPORT void osfs_audio_process(double blockStartFrame, int frames) {
     // -18 dB installation gain instead of the 1/d law, and the two land at a
     // comparable level near 10 m, so switching view is not a loudness jump.
     const double freeField = std::fmin(1.0, 1.0 / std::fmax(distance, 1e-3));
-    const double cockpitGain = gTier == kTierHigh ? gEngine.highCockpitGain() : 0.12589254117941673;
-    const double cockpitHz = gTier == kTierHigh ? gEngine.highCockpitHz() : 1200.0;
+    const double cockpitGain = gPistonActive ? gPiston.cockpitGain()
+        : gTier == kTierHigh ? gEngine.highCockpitGain() : 0.12589254117941673;
+    const double cockpitHz = gPistonActive ? gPiston.cockpitHz()
+        : gTier == kTierHigh ? gEngine.highCockpitHz() : 1200.0;
     const double absorption = clamp(18000.0 / (1.0 + distance / 200.0), 500.0, 18000.0);
     const double colourHz = gColourHz.process(cockpitHz + (absorption - cockpitHz) * exterior);
     // Without pose the source stays where it was last placed rather than

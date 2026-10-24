@@ -24,6 +24,7 @@ const engine = (engineDefinitionId: string): AircraftAudioInstallation => ({
   engineSources: [{ id: "main-exhaust", engineIndex: 0, engineDefinitionId, position: { kind: "native-engine" } }],
 });
 const INSTALLATIONS: Partial<Record<AircraftId, AircraftAudioInstallation>> = {
+  "cessna-172": engine("io320-piston"),
   "cirrus-vision-jet": engine("fj33-reference"),
   "cirrus-vision-jet-g2": engine("fj33-reference"),
   "cirrus-vision-jet-g3": engine("fj33-reference"),

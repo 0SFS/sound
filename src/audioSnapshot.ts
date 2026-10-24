@@ -7,7 +7,7 @@
  * mantissa, and one uniform element type keeps the transport a single copy.
  */
 
-export const AUDIO_SNAPSHOT_VERSION = 4;
+export const AUDIO_SNAPSHOT_VERSION = 5;
 
 /**
  * Slot order. Renaming, reordering or inserting a field is a breaking ABI
@@ -59,6 +59,8 @@ export const AUDIO_SNAPSHOT_FIELDS = [
   "sourceAxisX", "sourceAxisY", "sourceAxisZ",
   /** Native actually burned reheat fuel, kg/s; requires valid thermal state. */
   "afterburnerBurnedFuelFlowKgSec",
+  /** Native piston crankshaft/propeller RPM and mechanical shaft power. */
+  "engineRpm", "propellerRpm", "shaftPowerHp",
 ] as const;
 
 export type AudioSnapshotField = typeof AUDIO_SNAPSHOT_FIELDS[number];
@@ -84,6 +86,9 @@ export const AVAILABILITY = Object.freeze({
   AUGMENTATION: 1 << 10,
   SOURCE_AXIS: 1 << 11,
   AFTERBURNER_BURNED_FUEL: 1 << 12,
+  ENGINE_RPM: 1 << 13,
+  PROPELLER_RPM: 1 << 14,
+  SHAFT_POWER: 1 << 15,
 });
 
 /**
@@ -154,6 +159,9 @@ export interface AudioSnapshotInit {
   groundReflectionM?: number;
   augmentation?: boolean;
   afterburnerBurnedFuelFlowKgSec?: number;
+  engineRpm?: number;
+  propellerRpm?: number;
+  shaftPowerHp?: number;
   sourceAxis?: readonly [number, number, number];
 }
 
@@ -197,6 +205,13 @@ export function writeAudioSnapshot(target: Float64Array, offset: number, init: A
   target[offset + s.exterior] = finite(init.exterior, 0);
   target[offset + s.groundReflectionM] = finite(init.groundReflectionM, -1);
   target[offset + s.augmentation] = init.augmentation ? 1 : 0;
+  for (const [field, flag] of [["engineRpm", AVAILABILITY.ENGINE_RPM],
+    ["propellerRpm", AVAILABILITY.PROPELLER_RPM], ["shaftPowerHp", AVAILABILITY.SHAFT_POWER]] as const) {
+    const value = init[field];
+    const valid = typeof value === "number" && Number.isFinite(value) && (field === "shaftPowerHp" || value >= 0);
+    target[offset + s[field]] = valid ? value : 0;
+    if (!valid) target[offset + s.availability] &= ~flag;
+  }
   const burnedFuel = init.afterburnerBurnedFuelFlowKgSec;
   if (typeof burnedFuel === "number" && Number.isFinite(burnedFuel) && burnedFuel >= 0) {
     target[offset + s.afterburnerBurnedFuelFlowKgSec] = burnedFuel;
