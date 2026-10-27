@@ -31,6 +31,10 @@ const INSTALLATIONS: Partial<Record<AircraftId, AircraftAudioInstallation>> = {
   "f-35b": engine("f135-approximation"),
 };
 
+export function registerAircraftAudioInstallation(id: AircraftId, engineDefinitionId: string): void {
+  INSTALLATIONS[id] = engine(engineDefinitionId);
+}
+
 export function getAircraftAudioInstallation(id: AircraftId): AircraftAudioInstallation | undefined {
   return INSTALLATIONS[id];
 }

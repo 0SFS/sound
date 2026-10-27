@@ -162,12 +162,25 @@ export const IO320_DEFINITION: EngineAcousticDefinition = Object.freeze({
 });
 
 /** Open definition keys; renderer assignment is independent of engine class/family. */
-const DEFINITIONS: Readonly<Record<string, EngineAcousticDefinition>> = {
-  [FJ33_DEFINITION.id]: FJ33_DEFINITION, [F135_DEFINITION.id]: F135_DEFINITION,
-  [IO320_DEFINITION.id]: IO320_DEFINITION,
-};
+const DEFINITIONS = new Map<string, EngineAcousticDefinition>([
+  [FJ33_DEFINITION.id, FJ33_DEFINITION], [F135_DEFINITION.id, F135_DEFINITION],
+  [IO320_DEFINITION.id, IO320_DEFINITION],
+]);
+
+export function telemetryById(id: string): NativeEngineTelemetrySchema | undefined {
+  if (id === JSBSIM_PISTON_TELEMETRY.id) return JSBSIM_PISTON_TELEMETRY;
+  if (id === JSBSIM_THERMAL_TURBINE_TELEMETRY.id) return JSBSIM_THERMAL_TURBINE_TELEMETRY;
+  if (id === JSBSIM_TURBINE_TELEMETRY.id) return JSBSIM_TURBINE_TELEMETRY;
+  return undefined;
+}
+
+/** An engine mod installs its acoustic profile. A built-in id stays the object the rest of the app already holds. */
+export function registerEngineAcousticDefinition(definition: EngineAcousticDefinition): void {
+  if (!DEFINITIONS.has(definition.id)) DEFINITIONS.set(definition.id, definition);
+}
+
 export function getEngineAcousticDefinition(id: string): EngineAcousticDefinition | undefined {
-  return Object.hasOwn(DEFINITIONS, id) ? DEFINITIONS[id] : undefined;
+  return DEFINITIONS.get(id);
 }
 
 /** Encoder for the current reference renderer; absent setup is allowed only in low-level legacy fixtures. */
