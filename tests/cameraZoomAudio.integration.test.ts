@@ -3,7 +3,8 @@ import { afterEach, describe, expect, it } from "vitest";
 import { createPlaceholderAircraft, type AircraftEntity } from "@0sfs/aircraft/createPlaceholderAircraft";
 import { computeListenerPose, createListenerPose } from "../src/audioPose";
 import { AVAILABILITY, type AudioSnapshotInit } from "../src/audioSnapshot";
-import { createDspHarness, dominantFrequency, rms, TIER, type DspHarness } from "../src/dspHarness";
+import { dominantFrequency, rms, TIER, type DspHarness } from "../src/dspHarness";
+import { createReferenceHarness as createDspHarness } from "./fixtures/engineProfiles";
 
 /**
  * Chase-camera zoom, traced from the REAL camera through audioPose into the

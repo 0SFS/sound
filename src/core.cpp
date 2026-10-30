@@ -14,8 +14,9 @@
 #include "granular.h"
 #include "primitives.h"
 #include "snapshot.h"
-#include "turbofan.h"
-#include "piston.h"
+#include "tire_voice.h"
+#include "../../engine-sound/src/voice_caps.h"
+#include "../../engine-sound/src/voice_abi.h"
 
 #ifdef __EMSCRIPTEN__
 #include <emscripten/emscripten.h>
@@ -119,22 +120,25 @@ double gBatch[kBatchLength];
 float gOutLeft[kMaxBlock];
 float gOutRight[kMaxBlock];
 
-float gDelayStorage[kDelayCapacity];
-DelayLine gDelay;
-
-double gIrSpectra[kMaxPartitions * kFftSize * 2];
-double gIrFdl[kMaxPartitions * kFftSize * 2];
-double gIrScratch[4 * kFftSize];
-double gIrTaps[kMaxIrTaps];
-Convolver gConvolver;
-double gWetIn[kPartition];
-double gWetOut[kPartition];
-int gPartIndex = 0;
-double gIrSeconds = -1.0;
-
-TurbofanVoice gEngine;
-PistonVoice gPiston;
-bool gPistonActive = false;
+struct SpatialVoice {
+ float delayStorage[kDelayCapacity]; DelayLine delay;
+ double irSpectra[kMaxPartitions*kFftSize*2], irFdl[kMaxPartitions*kFftSize*2], irScratch[4*kFftSize],irTaps[kMaxIrTaps];
+ Convolver convolver; double wetIn[kPartition],wetOut[kPartition];int partIndex=0;double irSeconds=-1;
+ Biquad colour;Smoother spatial,pan,colourHz,rangeFade,exterior,sourceCosine,sourceDirectionWeight;
+ double delaySamples=0,delayAlternate=0,delayBlend=0;bool delayCrossfading=false,delaySeeded=false;int delayResetCounter=-1;
+};
+SpatialVoice gSpatialVoices[kVoiceMaxSources];
+int gSourceCount=1,gFamilyResetCounter=0,gDelayResetCounter=0;
+bool gElectricSources=false;
+double gInteriorGain=0.12589254117941673,gInteriorHz=1200,gHighInteriorGain=0.12589254117941673,gHighInteriorHz=1400;
+double gVoiceInputs[kVoiceMaxSources*kVoiceMaxFrames*kVoiceInputStride];
+double gVoiceOutputs[kVoiceMaxSources*2*kVoiceMaxFrames];
+EngineCaps gCaps;
+double gIrSeconds=-1;
+struct PreparedFrame {double values[kSnapshotSize];double fade;int tier;EngineCaps caps;double irSeconds;int delayResetCounter;};
+PreparedFrame gPrepared[kMaxBlock];
+double gPreparedExterior[kVoiceMaxSources][kMaxBlock];
+int gPreparedCount=0;
 TireVoice gTire;
 GranularVoice gGrains;
 Dynamics gDynamics;
@@ -143,24 +147,6 @@ Band gBands[kMaxBands];
 float* gBandStorage[kMaxBands] = {};
 int gBandCount = 0;
 
-Biquad gColour;
-Smoother gSpatial, gPan, gColourHz, gCombustion, gRangeFade;
-/**
- * Propagation delay in samples, integrated from the Doppler ratio rather than
- * read straight off the geometry. See the propagation block in
- * osfs_audio_process() for why the distance cannot drive it directly.
- */
-double gDelaySamples = 0.0;
-double gDelayAlternate = 0.0;
-double gDelayBlend = 0.0;
-bool gDelayCrossfading = false;
-bool gDelaySeeded = false;
-Smoother gN1, gN2, gThrust, gFuel, gKias, gGear, gFlap, gExterior;
-Smoother gEngineRpm, gPropellerRpm, gShaftPower;
-Smoother gAugmentation;
-Smoother gAfterburnerVolumeSmooth;
-Smoother gSourceCosine, gSourceDirectionWeight;
-AcousticProfile gProfileSetup;
 
 double gTireWatts = 0.0;
 double gFade = 0.0;
@@ -263,22 +249,12 @@ void applyCaps() {
     break;
   }
 
-  gEngine.setCaps(caps);
-  gPiston.setCaps(caps);
+  gCaps=caps;
   gGrains.setCaps(grains, starts);
 
-  if (irSeconds != gIrSeconds) {
-    gIrSeconds = irSeconds;
-    if (irSeconds <= 0.0) {
-      gConvolver.setImpulse(nullptr, 0);
-    } else {
-      const int taps =
-          generateCabinImpulse(gIrTaps, kMaxIrTaps, gSampleRate, irSeconds, 0x53463530u);
-      gConvolver.setImpulse(gIrTaps, taps);
-    }
-    gPartIndex = 0;
-    for (int i = 0; i < kPartition; ++i) { gWetIn[i] = 0.0; gWetOut[i] = 0.0; }
-  }
+  // Open-air electric installations have no cabin impulse response.
+  if (gElectricSources) irSeconds = 0.0;
+  gIrSeconds=irSeconds;
   gStats[kStatTier] = gTier;
   gStats[kStatShed] = gShed;
   gStats[kStatPartials] = caps.partials;
@@ -293,7 +269,7 @@ void applyPendingCaps() {
     gTier = gPendingTier;
     gPendingTier = -1;
     gShed = 0;
-    gDelaySeeded = false;
+    ++gDelayResetCounter;
   }
   applyCaps();
   gCapsPending = false;
@@ -312,29 +288,13 @@ void requestCaps() {
 }
 
 void resetVoices() {
-  gEngine.reset();
-  gPiston.reset();
-  gTire.reset();
-  gGrains.reset();
-  gDynamics.reset();
-  gDelay.reset();
-  gConvolver.clear();
-  gColour.reset();
-  gPartIndex = 0;
-  for (int i = 0; i < kPartition; ++i) { gWetIn[i] = 0.0; gWetOut[i] = 0.0; }
-  Smoother* smoothers[] = {&gN1, &gN2, &gThrust, &gFuel, &gKias, &gGear,
-                           &gFlap, &gExterior, &gCombustion, &gSpatial, &gPan, &gAugmentation,
-                           &gSourceCosine, &gSourceDirectionWeight, &gEngineRpm, &gPropellerRpm, &gShaftPower};
-  for (Smoother* s : smoothers) s->reset(0.0);
-  gColourHz.reset(1200.0);
-  gRangeFade.reset(1.0);
-  gAfterburnerVolumeSmooth.reset(gAfterburnerVolume);
-  gDelaySamples = 0.0;
-  gDelayAlternate = 0.0;
-  gDelayBlend = 0.0;
-  gDelayCrossfading = false;
-  gCapsPending = false;
-  gDelaySeeded = false;
+ ++gFamilyResetCounter;gTire.reset();gGrains.reset();gDynamics.reset();
+ for(auto& v:gSpatialVoices){v.delay.reset();v.convolver.clear();v.colour.reset();v.partIndex=0;
+  for(int i=0;i<kPartition;++i){v.wetIn[i]=0;v.wetOut[i]=0;}
+  for(Smoother* sm:{&v.spatial,&v.pan,&v.exterior,&v.sourceCosine,&v.sourceDirectionWeight})sm->reset(0);
+  v.colourHz.reset(1200);v.rangeFade.reset(1);v.delaySamples=0;v.delayAlternate=0;v.delayBlend=0;v.delayCrossfading=false;v.delaySeeded=false;v.irSeconds=-1;
+ }
+ gCapsPending=false;
 }
 
 /** Ingests one snapshot, keeping the queue ordered by target frame. */
@@ -490,20 +450,9 @@ OSFS_EXPORT int osfs_audio_init(double sampleRate, int maxBlockFrames, unsigned 
   gPendingTier = -1;
   gAfterburnerVolume = 1.0;
   gMaxBlock = (maxBlockFrames > 0 && maxBlockFrames <= kMaxBlock) ? maxBlockFrames : kPartition;
-  gEngine.configure(sampleRate, seed ? seed : 0x53463530u);
-  gPiston.configure(sampleRate, seed ? seed : 0x53463530u);
-  gPistonActive = false;
-  gTire.configure(sampleRate, 0x74697265u);
-  gGrains.configure(sampleRate, seed ^ 0x9e3779b9u);
-  gDynamics.configure(sampleRate);
-  gDelay.configure(gDelayStorage, static_cast<int>(clamp(sampleRate * 0.5, 2.0, kDelayCapacity)));
-  gConvolver.configure(gIrSpectra, gIrFdl, gIrScratch);
-  for (Smoother* s : {&gN1, &gN2, &gThrust, &gFuel, &gKias, &gGear, &gFlap,
-                      &gExterior, &gCombustion, &gSpatial, &gPan, &gColourHz,
-                      &gRangeFade, &gAugmentation, &gAfterburnerVolumeSmooth,
-                      &gSourceCosine, &gSourceDirectionWeight, &gEngineRpm, &gPropellerRpm, &gShaftPower}) {
-    s->configure(sampleRate, kSmoothTau);
-  }
+  gTire.configure(sampleRate,0x74697265u);gGrains.configure(sampleRate,seed^0x9e3779b9u);gDynamics.configure(sampleRate);
+ for(auto& v:gSpatialVoices){v.delay.configure(v.delayStorage,static_cast<int>(clamp(sampleRate*0.5,2.0,kDelayCapacity)));v.convolver.configure(v.irSpectra,v.irFdl,v.irScratch);
+ for(Smoother* sm:{&v.spatial,&v.pan,&v.colourHz,&v.rangeFade,&v.exterior,&v.sourceCosine,&v.sourceDirectionWeight})sm->configure(sampleRate,kSmoothTau);}
   gIrSeconds = -1.0;
   for (int i = 0; i < kStatCount; ++i) gStats[i] = 0.0;
   clearQueue();
@@ -525,18 +474,14 @@ OSFS_EXPORT void osfs_audio_reset(void) {
   beginFade(1.0, kTransitionFadeSeconds);
 }
 
-/** Fixed-size setup transaction, separate from raw physical snapshots. */
-OSFS_EXPORT double* osfs_audio_profile_ptr(void) { return gProfileSetup.values; }
-OSFS_EXPORT int osfs_audio_profile_size(void) { return kProfileSize; }
-OSFS_EXPORT int osfs_audio_commit_profile(void) {
-  AcousticProfile validated;
-  if (!validated.set(gProfileSetup.values)) return 0;
-  const bool piston = validated.at(kProfileVoiceKind) == 1.0;
-  const bool accepted = piston ? gPiston.setProfile(validated.values) : gEngine.setProfile(validated.values);
-  if (accepted) gPistonActive = piston;
-  return accepted ? 1 : 0;
+/** Family-neutral installation and block buffers. Family profiles never enter the host. */
+OSFS_EXPORT void osfs_audio_set_source_type(int electric){gElectricSources=electric!=0;}
+OSFS_EXPORT void osfs_audio_set_sources(int count,double gain,double hz,double highGain,double highHz){
+ gSourceCount=static_cast<int>(clamp(count,1,kVoiceMaxSources));gInteriorGain=clamp(sanitize(gain),0,1);gInteriorHz=clamp(sanitize(hz,1200),20,20000);gHighInteriorGain=clamp(sanitize(highGain),0,1);gHighInteriorHz=clamp(sanitize(highHz,1200),20,20000);
 }
-
+OSFS_EXPORT double* osfs_audio_voice_input_ptr(){return gVoiceInputs;}
+OSFS_EXPORT double* osfs_audio_voice_output_ptr(){return gVoiceOutputs;}
+OSFS_EXPORT int osfs_audio_source_count(){return gSourceCount;}
 OSFS_EXPORT void osfs_audio_set_tier(int tier) {
   const int next = (tier < kTierOff) ? kTierOff : (tier > kTierHigh ? kTierHigh : tier);
   if (next == gPendingTier || (next == gTier && gPendingTier < 0)) return;
@@ -553,7 +498,7 @@ OSFS_EXPORT void osfs_audio_set_tier(int tier) {
   applyCaps();
   // Low does not run the delay line, so its tap is stale on the way back into
   // Med. The fade below covers re-seating it from the current geometry.
-  gDelaySeeded = false;
+  ++gDelayResetCounter;
   // §1: fade down, switch, fade up. Never run two engines to cross a tier.
   gFade = 0.0;
   beginFade(1.0, kTransitionFadeSeconds);
@@ -607,7 +552,7 @@ OSFS_EXPORT void osfs_audio_set_afterburner_volume(double volume) {
   // Setup has no previous audible gain to preserve. A saved zero must not
   // leak reheat while smoothing from the core's default one on its first
   // rendered samples. Live edits still use the existing 10 ms dezipper.
-  if (gStats[kStatFrames] == 0.0) gAfterburnerVolumeSmooth.reset(gAfterburnerVolume);
+
 }
 
 OSFS_EXPORT void osfs_audio_set_epoch(int epoch, double simTimeS, double audioFrame) {
@@ -625,7 +570,7 @@ OSFS_EXPORT void osfs_audio_set_epoch(int epoch, double simTimeS, double audioFr
   // and come back up rather than gliding through unrelated state. That includes
   // re-seating the propagation delay, so a teleport lands on its new range
   // under the fade below instead of holding the old one.
-  gDelaySeeded = false;
+  ++gDelayResetCounter;
   gFade = 0.0;
   beginFade(1.0, kTransitionFadeSeconds);
 }
@@ -700,9 +645,12 @@ OSFS_EXPORT int osfs_audio_bands_ready(void) { return gGrains.hasBands() ? 1 : 0
  * Renders `frames` samples starting at absolute audio frame `blockStartFrame`.
  * No allocation, no locking, no waiting, no logging.
  */
-OSFS_EXPORT void osfs_audio_process(double blockStartFrame, int frames) {
+OSFS_EXPORT void osfs_audio_prepare(double blockStartFrame, int frames) {
   const int count = frames < 0 ? 0 : (frames > gMaxBlock ? gMaxBlock : frames);
+  gPreparedCount=count;
   if (!gReady || gTier == kTierOff) {
+    for(int i=0;i<count;++i)gPrepared[i].tier=0;
+    for(int v=0;v<gSourceCount;++v)for(int i=0;i<count;++i){double* row=gVoiceInputs+(v*kVoiceMaxFrames+i)*kVoiceInputStride;for(int j=0;j<kVoiceInputStride;++j)row[j]=0;}
     for (int i = 0; i < count; ++i) { gOutLeft[i] = 0.0f; gOutRight[i] = 0.0f; }
     return;
   }
@@ -776,107 +724,73 @@ OSFS_EXPORT void osfs_audio_process(double blockStartFrame, int frames) {
       if (haveTelemetry && staleSeconds <= kStaleSeconds) beginFade(1.0, kTransitionFadeSeconds * 0.5);
     }
     if (gTier == kTierOff) {
-      gOutLeft[i] = 0.0f;
-      gOutRight[i] = 0.0f;
+      gPrepared[i].tier=0;
+      for(int v=0;v<gSourceCount;++v)gVoiceInputs[(v*kVoiceMaxFrames+i)*kVoiceInputStride+kVoiceTier]=0;
       continue;
     }
     const bool spatialTier = gTier >= kTierMed;
 
-    const int availability = static_cast<int>(interpolated[kAvailability]);
-    EngineInput in;
-    // A clear availability bit means "not published". Smoothing toward zero is
-    // the honest response: it fades that contribution out instead of asserting
-    // a value the adapter never read.
-    in.n1 = gN1.process((availability & kAvailN1) ? clamp01(interpolated[kN1Pct] / 100.0) : 0.0);
-    in.n2 = gN2.process((availability & kAvailN2) ? clamp01(interpolated[kN2Pct] / 100.0) : 0.0);
-    in.thrustNorm = gThrust.process(
-        (availability & kAvailThrust) ? clamp(interpolated[kThrustLbf] / gEngine.thrustReference(),
-            0.0, gEngine.thrustCeiling()) : 0.0);
-    in.fuelNorm = gFuel.process(
-        (availability & kAvailFuelFlow) ? clamp01(interpolated[kFuelFlowPps] / gEngine.fuelReference()) : 0.0);
-    // Reheat selection is permission, not evidence of combustion. Use the
-    // native actually burned share of total fuel as a continuous acoustic
-    // proxy, shared with the optical source. Its amplitude law is uncalibrated.
-    // Missing/invalid thermal observations never fall back to the boolean.
-    const bool haveBurnedFuel = (availability & kAvailAfterburnerBurnedFuel)
-        && (availability & kAvailFuelFlow) && (availability & kAvailAugmentation)
-        && interpolated[kAugmentation] > 0.5 && interpolated[kFuelFlowPps] > 0.0;
-    const double burnedFraction = haveBurnedFuel ? clamp01(
-        interpolated[kAfterburnerBurnedFuelFlowKgSec]
-        / (interpolated[kFuelFlowPps] * 0.45359237)) : 0.0;
-    in.afterburnerFraction = gAugmentation.process(burnedFraction);
-    in.afterburnerVolume = gAfterburnerVolumeSmooth.process(gAfterburnerVolume);
-    in.kias = gKias.process((availability & kAvailAirspeed) ? std::fmax(0.0, interpolated[kKias]) : 0.0);
-    in.gear = gGear.process((availability & kAvailConfig) ? clamp01(interpolated[kGearNorm]) : 0.0);
-    in.flap = gFlap.process((availability & kAvailConfig) ? clamp01(interpolated[kFlapNorm]) : 0.0);
+    gStats[kStatTelemetryAge]=staleSeconds;
+    PreparedFrame& pf=gPrepared[i];std::memcpy(pf.values,interpolated,sizeof(interpolated));pf.fade=gFade;pf.tier=gTier;pf.caps=gCaps;pf.irSeconds=gIrSeconds;pf.delayResetCounter=gDelayResetCounter;
+    const int availability=static_cast<int>(interpolated[kAvailability]);
+    double combustionTarget=(availability&kAvailCombustion)?clamp01(interpolated[kCombustion]):0;
+    if(gHasCombustionLatch){if(std::fabs(combustionTarget-gCombustionLatch)<0.5)gHasCombustionLatch=false;else combustionTarget=gCombustionLatch;}
+    const bool electric=gElectricSources;
+    for(int v=0;v<gSourceCount;++v){auto& spatial=gSpatialVoices[v];double* row=gVoiceInputs+(v*kVoiceMaxFrames+i)*kVoiceInputStride;for(int j=0;j<kVoiceInputStride;++j)row[j]=0;
+     row[kVoiceN1Pct]=(availability&kAvailN1)?interpolated[kN1Pct]:0;row[kVoiceN2Pct]=(availability&kAvailN2)?interpolated[kN2Pct]:0;
+     row[kVoiceThrustLbf]=(availability&kAvailThrust)?interpolated[kThrustLbf]:0;row[kVoiceFuelFlowPps]=(availability&kAvailFuelFlow)?interpolated[kFuelFlowPps]:0;
+     row[kVoiceCombustion]=combustionTarget;row[kVoiceEngineRpm]=(availability&kAvailEngineRpm)?interpolated[kEngineRpm]:0;row[kVoicePropellerRpm]=(availability&kAvailPropellerRpm)?interpolated[kPropellerRpm]:0;row[kVoiceShaftPowerHp]=(availability&kAvailShaftPower)?interpolated[kShaftPowerHp]:0;
+     row[kVoiceKias]=(availability&kAvailAirspeed)?interpolated[kKias]:0;row[kVoiceGearNorm]=(availability&kAvailConfig)?interpolated[kGearNorm]:0;row[kVoiceFlapNorm]=(availability&kAvailConfig)?interpolated[kFlapNorm]:0;
+     const bool haveBurned=(availability&kAvailAfterburnerBurnedFuel)&&(availability&kAvailFuelFlow)&&(availability&kAvailAugmentation)&&interpolated[kAugmentation]>.5&&interpolated[kFuelFlowPps]>0;
+     row[kVoiceAfterburnerFraction]=haveBurned?clamp01(interpolated[kAfterburnerBurnedFuelFlowKgSec]/(interpolated[kFuelFlowPps]*.45359237)):0;row[kVoiceAfterburnerVolume]=gAfterburnerVolume;
+     const int rotor=kRotor0Rpm+v*16;
+     const int pos=electric?rotor+6:kSourceX,vel=electric?rotor+9:kSourceVelX,axis=electric?rotor+12:kSourceAxisX;
+     const double sx=interpolated[pos],sy=interpolated[pos+1],sz=interpolated[pos+2],distance=std::sqrt(sx*sx+sy*sy+sz*sz);
+     const double soundSpeed=std::fmax(50.0,interpolated[kSoundSpeedMps]);
+     const double exterior=spatial.exterior.process((availability&kAvailPose)?clamp01(interpolated[kExterior]):0);
+     double cosine=0;bool known=false;if((availability&kAvailPose)&&(electric||(availability&kAvailSourceAxis))&&distance>1e-3){const double ax=interpolated[axis],ay=interpolated[axis+1],az=interpolated[axis+2],len=std::sqrt(ax*ax+ay*ay+az*az);if(len>1e-6){cosine=clamp(-(ax*sx+ay*sy+az*sz)/(len*distance),-1,1);known=true;}}
+     gPreparedExterior[v][i]=exterior;
+     row[kVoiceDownstreamCosine]=spatial.sourceCosine.process(cosine);row[kVoiceDirectionWeight]=spatial.sourceDirectionWeight.process(known?exterior:0);
+     double doppler=1;if(distance>1e-3){const double nx=-sx/distance,ny=-sy/distance,nz=-sz/distance;const double vs=interpolated[vel]*nx+interpolated[vel+1]*ny+interpolated[vel+2]*nz,vl=interpolated[kListenerVelX]*nx+interpolated[kListenerVelY]*ny+interpolated[kListenerVelZ]*nz;const double denominator=soundSpeed-vs;doppler=std::fabs(denominator)>1e-6?(soundSpeed-vl)/denominator:1;doppler=clamp(sanitize(doppler,1),.5,2);}
+     row[kVoiceCullScale]=gTier>=kTierMed?doppler:1;
+     if(electric){row[kVoiceRotorRpm]=interpolated[rotor];row[kVoiceThrustN]=interpolated[rotor+1];row[kVoiceTorqueNm]=interpolated[rotor+2];row[kVoiceInducedVelocityMps]=interpolated[rotor+3];row[kVoiceVrs]=interpolated[rotor+4];row[kVoiceAirDensityKgM3]=(availability&kAvailDensity)?interpolated[kAirDensityKgM3]:1.225;row[kVoiceArmed]=interpolated[kArmed];row[kVoiceAxialVelocityMps]=-interpolated[kAirVelocityZ]; /* Current drone thrust axes are body -Z. */}
+     row[kVoiceTier]=gTier;
+     // Electric caps are installation totals: every rotor retains its blade-passage tone.
+     row[kVoicePartials]=electric?gCaps.partials/gSourceCount+(v<gCaps.partials%gSourceCount):gCaps.partials;
+     row[kVoiceNoiseBands]=electric?gCaps.noiseBands/gSourceCount+(v<gCaps.noiseBands%gSourceCount):gCaps.noiseBands;row[kVoiceBypassBand]=gCaps.bypassBand;row[kVoiceHighFidelity]=gCaps.highFidelity;row[kVoiceResetCounter]=gFamilyResetCounter;row[kVoiceValid]=haveTelemetry&&(!electric||((availability&kAvailElectricRotors)&&interpolated[rotor+5]>.5));row[kVoiceAirframeOwner]=v==0;
+     // Geometry inputs are snapshotted separately; smoothing must advance only once.
 
-    double combustionTarget = (availability & kAvailCombustion) ? clamp01(interpolated[kCombustion]) : 0.0;
-    if (gHasCombustionLatch) {
-      if (std::fabs(combustionTarget - gCombustionLatch) < 0.5) gHasCombustionLatch = false;
-      else combustionTarget = gCombustionLatch;
     }
-    in.combustion = gCombustion.process(combustionTarget);
-
-    const double exterior = gExterior.process(
-        (availability & kAvailPose) ? clamp01(interpolated[kExterior]) : 0.0);
-
-    // ---- geometry -------------------------------------------------------
-    const double sx = interpolated[kSourceX];
-    const double sy = interpolated[kSourceY];
-    const double sz = interpolated[kSourceZ];
-    const double distance = std::sqrt(sx * sx + sy * sy + sz * sz);
-    const double soundSpeed = std::fmax(50.0, interpolated[kSoundSpeedMps]);
-    double sourceCosine = 0.0;
-    bool directionKnown = false;
-    if ((availability & kAvailSourceAxis) && (availability & kAvailPose) && distance > 1e-3) {
-      const double ax = interpolated[kSourceAxisX];
-      const double ay = interpolated[kSourceAxisY];
-      const double az = interpolated[kSourceAxisZ];
-      const double length = std::sqrt(ax * ax + ay * ay + az * az);
-      if (length > 1e-6) {
-        sourceCosine = clamp(-(ax * sx + ay * sy + az * sz) / (length * distance), -1.0, 1.0);
-        directionKnown = true;
-      }
-    }
-    in.downstreamCosine = gSourceCosine.process(sourceCosine);
-    in.directionWeight = gSourceDirectionWeight.process(directionKnown ? exterior : 0.0);
-
-    double doppler = 1.0;
-    // Range rate along the source -> listener line, positive when opening.
-    double rangeRate = 0.0;
-    if (distance > 1e-3) {
-      // n is the unit vector source -> listener (sound.md §3).
-      const double nx = -sx / distance, ny = -sy / distance, nz = -sz / distance;
-      const double vs = interpolated[kSourceVelX] * nx + interpolated[kSourceVelY] * ny
-          + interpolated[kSourceVelZ] * nz;
-      const double vl = interpolated[kListenerVelX] * nx + interpolated[kListenerVelY] * ny
-          + interpolated[kListenerVelZ] * nz;
-      const double denominator = soundSpeed - vs;
-      doppler = std::fabs(denominator) > 1e-6 ? (soundSpeed - vl) / denominator : 1.0;
-      doppler = clamp(sanitize(doppler, 1.0), 0.5, 2.0);
-      rangeRate = sanitize(vl - vs);
-    }
-
-    // ---- sources --------------------------------------------------------
-    // Doppler is applied by the delay line below, so the voice generates at
-    // base frequency and only uses the ratio to cull partials that would alias.
-    double airframeNoise = 0.0;
-    PistonInput pistonIn;
-    pistonIn.engineRpm = gEngineRpm.process((availability & kAvailEngineRpm) ? clamp(interpolated[kEngineRpm], 0.0, 10000.0) : 0.0);
-    pistonIn.propellerRpm = gPropellerRpm.process((availability & kAvailPropellerRpm) ? clamp(interpolated[kPropellerRpm], 0.0, 10000.0) : 0.0);
-    pistonIn.powerHp = gShaftPower.process((availability & kAvailShaftPower) ? std::fmax(0.0, interpolated[kShaftPowerHp]) : 0.0);
-    pistonIn.combustion = in.combustion;
-    pistonIn.kias = in.kias; pistonIn.gear = in.gear; pistonIn.flap = in.flap;
-    const double source = gPistonActive ? gPiston.process(pistonIn, spatialTier ? doppler : 1.0, &airframeNoise)
-        : gEngine.process(in, spatialTier ? doppler : 1.0, &airframeNoise);
-    double mono = source * gEngineGain + airframeNoise * gAirframeGain;
-
-    // Legacy test-bank storage remains an ABI capability, but recordings are
-    // never mixed into procedural High. In particular, no grain can keep an
-    // otherwise stopped aircraft audible.
-    gStats[kStatActiveGrains] = 0.0;
-    gStats[kStatGrainDrops] = 0.0;
-
+  }
+}
+OSFS_EXPORT void osfs_audio_mix(double blockStartFrame,int frames){
+ const int count=frames<0?0:(frames>gPreparedCount?gPreparedCount:frames);const double ceilingDelay=gSampleRate*.42;
+ for(int i=0;i<count;++i){const auto& pf=gPrepared[i];if(!gReady||pf.tier==kTierOff){gOutLeft[i]=gOutRight[i]=0;continue;}
+  const double* interpolated=pf.values;const int availability=static_cast<int>(interpolated[kAvailability]);const bool electric=gElectricSources;
+  const int tier=pf.tier;const bool spatialTier=tier>=kTierMed;double left=0,right=0,tireField=1;
+  for(int v=0;v<gSourceCount;++v){auto& state=gSpatialVoices[v];
+   auto& gDelay=state.delay;
+   auto& gConvolver=state.convolver;
+   auto& gColour=state.colour;
+   auto& gSpatial=state.spatial;
+   auto& gPan=state.pan;
+   auto& gColourHz=state.colourHz;
+   auto& gRangeFade=state.rangeFade;
+   auto& gDelaySamples=state.delaySamples;
+   auto& gDelayAlternate=state.delayAlternate;
+   auto& gDelayBlend=state.delayBlend;
+   auto& gDelayCrossfading=state.delayCrossfading;
+   auto& gDelaySeeded=state.delaySeeded;
+   auto& gPartIndex=state.partIndex;
+   auto& gWetIn=state.wetIn;
+   auto& gWetOut=state.wetOut;
+   if(state.delayResetCounter!=pf.delayResetCounter){state.delaySeeded=false;state.delayResetCounter=pf.delayResetCounter;}
+   if(state.irSeconds!=pf.irSeconds){state.irSeconds=pf.irSeconds;if(pf.irSeconds<=0)state.convolver.setImpulse(nullptr,0);else {const int taps=generateCabinImpulse(state.irTaps,kMaxIrTaps,gSampleRate,pf.irSeconds,0x53463530u);state.convolver.setImpulse(state.irTaps,taps);}state.partIndex=0;for(int j=0;j<kPartition;++j){state.wetIn[j]=state.wetOut[j]=0;}}
+   const int rotor=kRotor0Rpm+v*16,pos=electric?rotor+6:kSourceX,vel=electric?rotor+9:kSourceVelX;
+   const double sx=interpolated[pos],sy=interpolated[pos+1],sz=interpolated[pos+2],distance=std::sqrt(sx*sx+sy*sy+sz*sz),soundSpeed=std::fmax(50.0,interpolated[kSoundSpeedMps]);
+   const double exterior=gPreparedExterior[v][i];double doppler=1,rangeRate=0;if(distance>1e-3){const double nx=-sx/distance,ny=-sy/distance,nz=-sz/distance,vs=interpolated[vel]*nx+interpolated[vel+1]*ny+interpolated[vel+2]*nz,vl=interpolated[kListenerVelX]*nx+interpolated[kListenerVelY]*ny+interpolated[kListenerVelZ]*nz;const double denominator=soundSpeed-vs;doppler=std::fabs(denominator)>1e-6?(soundSpeed-vl)/denominator:1;doppler=clamp(sanitize(doppler,1),.5,2);rangeRate=sanitize(vl-vs);}
+   const double source=sanitize(gVoiceOutputs[(v*2)*kVoiceMaxFrames+i]),airframeNoise=v==0?sanitize(gVoiceOutputs[(v*2+1)*kVoiceMaxFrames+i]):0;
+   double mono=source*gEngineGain+airframeNoise*gAirframeGain;
     // ---- propagation ----------------------------------------------------
     double direct = mono;
     if (spatialTier) {
@@ -944,7 +858,7 @@ OSFS_EXPORT void osfs_audio_process(double blockStartFrame, int frames) {
         direct = direct * directWeight + gDelay.read(gDelayAlternate) * alternateWeight;
       }
 
-      const double pathDifference = interpolated[kGroundReflectionM];
+      const double pathDifference = interpolated[electric?rotor+15:kGroundReflectionM];
       if (pathDifference >= 0.0) {
         // One ground-image reflection, gain <= 0.25 (sound.md §3). This tap
         // sits a path difference further back, so it reaches the cap first, and
@@ -972,10 +886,8 @@ OSFS_EXPORT void osfs_audio_process(double blockStartFrame, int frames) {
     // -18 dB installation gain instead of the 1/d law, and the two land at a
     // comparable level near 10 m, so switching view is not a loudness jump.
     const double freeField = std::fmin(1.0, 1.0 / std::fmax(distance, 1e-3));
-    const double cockpitGain = gPistonActive ? gPiston.cockpitGain()
-        : gTier == kTierHigh ? gEngine.highCockpitGain() : 0.12589254117941673;
-    const double cockpitHz = gPistonActive ? gPiston.cockpitHz()
-        : gTier == kTierHigh ? gEngine.highCockpitHz() : 1200.0;
+    const double cockpitGain=tier==kTierHigh?gHighInteriorGain:gInteriorGain;
+    const double cockpitHz=tier==kTierHigh?gHighInteriorHz:gInteriorHz;
     const double absorption = clamp(18000.0 / (1.0 + distance / 200.0), 500.0, 18000.0);
     const double colourHz = gColourHz.process(cockpitHz + (absorption - cockpitHz) * exterior);
     // Without pose the source stays where it was last placed rather than
@@ -995,44 +907,18 @@ OSFS_EXPORT void osfs_audio_process(double blockStartFrame, int frames) {
       }
       // High treats the generated IR as cockpit-only colour. Applying a cabin
       // IR to free-field jet sound would invent an installation at the mic.
-      const double wetGain = 0.35 * (gTier == kTierHigh ? 1.0 - exterior : 1.0);
+      const double wetGain = electric ? 0.0 : 0.35 * (tier == kTierHigh ? 1.0 - exterior : 1.0);
       coloured = coloured * (1.0 - wetGain) + wet * wetGain;
     }
 
-    // ---- pan and tire ---------------------------------------------------
-    const double pan = gPan.process(distance > 1e-3 ? clamp(sx / std::fmax(distance, 0.5), -1.0, 1.0) : 0.0);
-    const double angle = (pan + 1.0) * kPi * 0.25;
-    // The telemetry fade gates the ENGINE path only. The tire cue comes straight
-    // from contact slip on the main thread and has no snapshots of its own, so
-    // an aircraft without an engine adapter, or tire-only playback, must not be
-    // silenced by a stale-telemetry fade.
-    const double engineEnvelope = clamp01(gFade);
-    double left = coloured * std::cos(angle) * kSqrt2 * engineEnvelope;
-    double right = coloured * std::sin(angle) * kSqrt2 * engineEnvelope;
-
-    // The tire cue is non-positional, exactly as the graph it replaces was. In
-    // exterior view it takes the same distance law so a 200 m chase camera does
-    // not hear louder tires than engine.
-    const double tire = gTire.process(gTireWatts) * gTireGain
-        * (1.0 + (freeField - 1.0) * exterior);
-    left += tire;
-    right += tire;
-
-    left *= gMasterGain;
-    right *= gMasterGain;
-    gDynamics.process(left, right);
-
-    gOutLeft[i] = static_cast<float>(left);
-    gOutRight[i] = static_cast<float>(right);
-    const double peak = std::fmax(std::fabs(left), std::fabs(right));
-    if (peak > gStats[kStatPeak]) gStats[kStatPeak] = peak;
-    gStats[kStatTelemetryAge] = staleSeconds;
-    gStats[kStatDoppler] = doppler;
-    gStats[kStatDistance] = distance;
+   const double pan=gPan.process(distance>1e-3?clamp(sx/std::fmax(distance,.5),-1,1):0),angle=(pan+1)*kPi*.25;
+   left+=coloured*std::cos(angle)*kSqrt2*clamp01(pf.fade);right+=coloured*std::sin(angle)*kSqrt2*clamp01(pf.fade);
+   if(v==0)tireField=1+(freeField-1)*exterior;
+   gStats[kStatDoppler]=doppler;gStats[kStatDistance]=distance;
   }
-
-  gStats[kStatBlocks] += 1.0;
-  gStats[kStatFrames] += count;
-  gStats[kStatQueueDepth] = gQueueCount;
-  gStats[kStatFade] = gFade;
+  const double tire=gTire.process(gTireWatts)*gTireGain*tireField;left=(left+tire)*gMasterGain;right=(right+tire)*gMasterGain;gDynamics.process(left,right);gOutLeft[i]=static_cast<float>(left);gOutRight[i]=static_cast<float>(right);const double peak=std::fmax(std::fabs(left),std::fabs(right));if(peak>gStats[kStatPeak])gStats[kStatPeak]=peak;
+ }
+ gStats[kStatBlocks]+=1;gStats[kStatFrames]+=count;gStats[kStatQueueDepth]=gQueueCount;gStats[kStatFade]=gFade;gStats[kStatActiveGrains]=0;gStats[kStatGrainDrops]=0;
 }
+/** Compatibility mixer entry point; synthesis is supplied exclusively by family modules. */
+OSFS_EXPORT void osfs_audio_process(double blockStartFrame,int frames){osfs_audio_prepare(blockStartFrame,frames);osfs_audio_mix(blockStartFrame,frames);}

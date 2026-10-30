@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { getAircraftAudioInstallation, resolveAircraftAudioInstallation, type AircraftAudioInstallation } from "../src/aircraftAudioProfiles";
 import { AUDIO_RENDERERS, getAudioRenderer, rendererAdmission } from "../src/audioRendererRegistry";
-import { FJ33_ACOUSTICS, FJ33_DEFINITION, F135_DEFINITION, IO320_DEFINITION, IO320_ACOUSTICS, getEngineAcousticDefinition } from "../src/engineAcousticDefinitions";
+import { getEngineAcousticDefinition } from "../src/engineAcousticDefinitions";
+import { FJ33_ACOUSTICS, FJ33_DEFINITION, F135_DEFINITION, IO320_DEFINITION, IO320_ACOUSTICS } from "./fixtures/engineProfiles";
 
 const installation = (indices: number[], definitionId = FJ33_DEFINITION.id): AircraftAudioInstallation => ({
   engineSources: indices.map(index => ({ id: `exhaust-${index}`, engineIndex: index,

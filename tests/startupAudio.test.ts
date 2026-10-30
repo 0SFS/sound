@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 import { AVAILABILITY, type AudioSnapshotInit } from "../src/audioSnapshot";
-import { F135_DEFINITION, FJ33_DEFINITION, type EngineAcousticDefinition } from "../src/engineAcousticDefinitions";
-import { createDspHarness, difference, dominantFrequency, peak, rms, TIER } from "../src/dspHarness";
+import { type EngineAcousticDefinition } from "../src/engineAcousticDefinitions";
+import { F135_DEFINITION, FJ33_DEFINITION } from "./fixtures/engineProfiles";
+import { difference, dominantFrequency, peak, rms, TIER } from "../src/dspHarness";
+import { createReferenceHarness as createDspHarness } from "./fixtures/engineProfiles";
 
 const available = Object.values(AVAILABILITY).reduce((bits, bit) => bits | bit, 0) & ~AVAILABILITY.SOURCE_AXIS;
 

@@ -58,6 +58,15 @@ describe("sound settings panel", () => {
     expect(panel.host.textContent).not.toContain("uncalibrated");
   });
 
+  it("shows four electric motor speeds and rotor loading without combustion gauges", async () => {
+    const panel = await mount(status("med", { telemetry: { kind: "electric", combustionSource: "unavailable", missing: [] },
+      engine: { kind: "electric", n1Pct: 0, n2Pct: 0, fuelFlowPps: 0, combustion: false, running: true,
+        rotorRpm: [6000, 6500, 7000, 7500] } }));
+    expect(panel.host.querySelector('[aria-label="Engine telemetry"]')!.textContent).toBe("Motor telemetry: 6000 RPM · 6500 RPM · 7000 RPM · 7500 RPM");
+    expect(panel.host.textContent).toContain("Motor and propeller sound follow each rotor’s simulated speed and load");
+    expect(panel.host.textContent).not.toContain("Combustion is read");
+  });
+
   it("shows burning piston engine RPM, propeller RPM and shaft power without turbine gauges", async () => {
     const panel = await mount(status("med", { engine: {
       kind: "piston", n1Pct: NaN, n2Pct: NaN, fuelFlowPps: 0.012, combustion: true, running: true,

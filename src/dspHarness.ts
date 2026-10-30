@@ -4,6 +4,9 @@ import {
   AUDIO_SNAPSHOT_SIZE, writeAudioSnapshot, type AudioEventType, type AudioSnapshotInit,
 } from "./audioSnapshot";
 import { acousticProfileValues, type AircraftAudioProfile } from "./aircraftAudioProfiles";
+import { pistonProfileValues } from "@0sfs/piston-sound/profile";
+import { electricProfileValues } from "@0sfs/electric-sound/profile";
+import type { EngineVoiceExports } from "@0sfs/engine-sound/voiceAbi";
 
 /**
  * Node-side driver for the ACTUAL compiled WASM core.
@@ -19,9 +22,13 @@ export interface DspExports {
   _initialize(): void;
   osfs_audio_init(sampleRate: number, maxBlockFrames: number, seed: number): number;
   osfs_audio_reset(): void;
-  osfs_audio_profile_ptr(): number;
-  osfs_audio_profile_size(): number;
-  osfs_audio_commit_profile(): number;
+  osfs_audio_set_source_type(electric:number):void;
+  osfs_audio_set_sources(count:number,gain:number,hz:number,highGain:number,highHz:number):void;
+  osfs_audio_voice_input_ptr():number;
+  osfs_audio_voice_output_ptr():number;
+  osfs_audio_source_count():number;
+  osfs_audio_prepare(frame:number,frames:number):void;
+  osfs_audio_mix(frame:number,frames:number):void;
   osfs_audio_set_tier(tier: number): void;
   osfs_audio_get_tier(): number;
   osfs_audio_set_shed(level: number): void;
@@ -78,10 +85,11 @@ export interface DspHarness {
   stats(): Record<keyof typeof STAT, number>;
   loadBand(index: number, samples: Float32Array, n1: number, exterior: number): boolean;
   setProfile(profile?: AircraftAudioProfile): void;
+  voiceExports(): EngineVoiceExports;
 }
 
 export async function createDspHarness(options: {
-  sampleRate?: number; block?: number; seed?: number;
+  sampleRate?: number; block?: number; seed?: number; profile?: AircraftAudioProfile; family?: "turbine"|"piston"|"electric"; profiles?: number[][]; voiceCount?:number;
 } = {}): Promise<DspHarness> {
   const sampleRate = options.sampleRate ?? 48_000;
   const block = options.block ?? 128;
@@ -95,6 +103,37 @@ export async function createDspHarness(options: {
     throw new Error(`osfs_audio_init refused sampleRate ${sampleRate}`);
   }
 
+  // Validation-only harness loads family modules so setProfile can switch synchronously.
+  const families = ["turbine", "piston", "electric"] as const;
+  const voices = Object.fromEntries(await Promise.all(families.map(async family => {
+    const url = new URL(`../../${family}-sound/public/audio/${family}-sound/voice.wasm`, import.meta.url);
+    const bytes = readFileSync(decodeURIComponent(url.pathname).replace(/^\/@fs\//, "/"));
+    const instance = new WebAssembly.Instance(await WebAssembly.compile(bytes), {});
+    const x = instance.exports as unknown as EngineVoiceExports;
+    x._initialize?.();
+    if (!x.osfs_voice_init(sampleRate, 1024, options.seed ?? 0x53463530, options.voiceCount ?? 1)) throw new Error("Voice setup rejected");
+    return [family, x];
+  }))) as Record<typeof families[number], EngineVoiceExports>;
+  let voice = voices[options.family ?? "turbine"];
+  const sourceCount = options.voiceCount ?? 1;
+  const configure = (profile: AircraftAudioProfile) => {
+    const family = profile.engineClass === "piston" ? "piston" : profile.engineClass === "electric" ? "electric" : "turbine";
+    voice = voices[family];
+    const values = family === "electric" ? electricProfileValues(profile) : family === "piston" ? pistonProfileValues(profile) : acousticProfileValues(profile);
+    const size = voice.osfs_voice_profile_size();
+    if (values.length !== size) throw new Error("Acoustic profile ABI mismatch");
+    for(let i=0;i<sourceCount;i++){
+      new Float64Array(voice.memory.buffer,voice.osfs_voice_profile_ptr(i),size).set(options.profiles?.[i] ?? values);
+      if(!voice.osfs_voice_commit_profile(i))throw new Error("Invalid acoustic profile");
+    }
+    exports.osfs_audio_set_source_type(family === "electric" ? 1 : 0);
+    const p = profile.parameters as Record<string,number>;
+    exports.osfs_audio_set_sources(sourceCount, family === "piston" ? p.pistonCockpitGain : family === "electric" ? 1 : 0.12589254117941673,
+      family === "piston" ? p.pistonCockpitHz : family === "electric" ? 18000 : 1200,
+      family === "piston" ? p.pistonCockpitGain : family === "electric" ? 1 : p.highCockpitGain,
+      family === "piston" ? p.pistonCockpitHz : family === "electric" ? 18000 : p.highCockpitHz);
+  };
+  if(options.profile)configure(options.profile);
   const batchView = (): Float64Array =>
     new Float64Array(exports.memory.buffer, exports.osfs_audio_batch_ptr(), AUDIO_BATCH_LENGTH);
   const eventBase = AUDIO_BATCH_HEADER + AUDIO_BATCH_SNAPSHOTS * AUDIO_SNAPSHOT_SIZE;
@@ -103,14 +142,21 @@ export async function createDspHarness(options: {
     exports,
     sampleRate,
     frame: 0,
+    voiceExports() { return voice; },
     setProfile(profile) {
-      const values = acousticProfileValues(profile);
-      if (values.length !== exports.osfs_audio_profile_size()) throw new Error("Acoustic profile ABI mismatch");
-      new Float64Array(exports.memory.buffer, exports.osfs_audio_profile_ptr(), values.length).set(values);
-      if (!exports.osfs_audio_commit_profile()) throw new Error("Invalid acoustic profile");
+      if(!profile)return;
+      configure(profile);
     },
     render(frames) {
-      exports.osfs_audio_process(harness.frame, frames);
+      exports.osfs_audio_prepare(harness.frame, frames);
+      const input = new Float64Array(voice.memory.buffer, voice.osfs_voice_input_ptr(),4*1024*32);
+      const prepared = new Float64Array(exports.memory.buffer, exports.osfs_audio_voice_input_ptr(),4*1024*32);
+      for(let v=0;v<sourceCount;v++)input.set(prepared.subarray(v*1024*32,v*1024*32+frames*32),v*1024*32);
+      if(!voice.osfs_voice_process(frames))throw new Error("Voice block rejected");
+      const output = new Float64Array(voice.memory.buffer, voice.osfs_voice_output_ptr(),4*2*1024);
+      const mixed = new Float64Array(exports.memory.buffer, exports.osfs_audio_voice_output_ptr(),4*2*1024);
+      for(let v=0;v<sourceCount;v++)for(let bus=0;bus<2;bus++)mixed.set(output.subarray((v*2+bus)*1024,(v*2+bus)*1024+frames),(v*2+bus)*1024);
+      exports.osfs_audio_mix(harness.frame,frames);
       harness.frame += frames;
       const memory = exports.memory.buffer;
       return {

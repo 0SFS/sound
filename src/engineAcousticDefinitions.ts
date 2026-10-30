@@ -1,3 +1,4 @@
+import { OwnedRegistry } from "@0sfs/mods/ownedRegistry";
 /** Native semantic fields; a schema selects paths without aircraft-specific code. */
 export type EngineTelemetryField = "n1Pct" | "n2Pct" | "thrustLbf" | "fuelFlowPps" | "running" | "augmentation" | "starter" | "cutoff" | "throttleNorm" | "thermalValid" | "afterburnerBurnedFuelFlowKgSec" | "engineRpm" | "propellerRpm" | "shaftPowerHp";
 export interface NativeEngineTelemetrySchema {
@@ -54,33 +55,11 @@ export const JSBSIM_PISTON_TELEMETRY: NativeEngineTelemetrySchema = Object.freez
   }),
 });
 
-/**
- * 0sfs owns aircraft acoustic setup for the shared procedural voice.
- * The field order is the setup ABI in dsp/acoustic_profile.h. Frequencies and
- * gains are synthesis controls, not measured blade orders or acoustic power.
- */
-export const JET_ACOUSTIC_PROFILE_FIELDS = [
-  "idleN1Pct", "idleN1SpanPct", "thrustReferenceLbf", "fuelReferencePps",
-  "n1ReferenceHz", "n2ReferenceHz", "fanMix", "fanToneGain", "coreToneGain",
-  "fanNoiseBaseGain", "fanNoisePowerGain", "bypassCenterHz", "bypassPowerHz", "bypassGain",
-  "jetBaseHz", "jetPowerHz", "jetGain", "combustorHz", "combustorHighHz", "combustorGain",
-  "outputGain", "afterburnerJetGain", "afterburnerJetHz",
-  "highFineMixGain", "highFineMixHz", "highShockGain", "highShockHz",
-  "highRearMixDirectivity", "highShockDirectivity",
-  "highCockpitGain", "highCockpitHz",
-] as const;
-
-export const PISTON_ACOUSTIC_PROFILE_FIELDS = [
-  "cylinders", "strokeCycle", "propellerBlades", "ratedRpm", "ratedPowerHp",
-  "firingGain", "propellerGain", "mechanicalGain", "exhaustNoiseGain", "propellerNoiseGain",
-  "pistonOutputGain", "pistonCockpitGain", "pistonCockpitHz",
-] as const;
-/** Shared fixed-size setup transaction. voiceKind selects its typed parameter section. */
-export const ACOUSTIC_PROFILE_FIELDS = [
-  ...JET_ACOUSTIC_PROFILE_FIELDS, "voiceKind", ...PISTON_ACOUSTIC_PROFILE_FIELDS,
-] as const;
-export type EngineAcousticProfile = Readonly<Record<typeof JET_ACOUSTIC_PROFILE_FIELDS[number], number>>;
-export type PistonAcousticProfile = Readonly<Record<typeof PISTON_ACOUSTIC_PROFILE_FIELDS[number], number>>;
+export { JET_ACOUSTIC_PROFILE_FIELDS, PISTON_ACOUSTIC_PROFILE_FIELDS, ACOUSTIC_PROFILE_FIELDS } from "@0sfs/engine-sound/legacyProfile";
+export type { EngineAcousticProfile, PistonAcousticProfile } from "@0sfs/engine-sound/legacyProfile";
+import { acousticProfileValues as turbineProfileValues } from "@0sfs/turbine-sound/profile";
+import { pistonProfileValues } from "@0sfs/piston-sound/profile";
+export { pistonProfileValues };
 
 export interface EngineAcousticDefinition {
   /** Open hardware metadata; renderer compatibility is an independent gate. */
@@ -94,138 +73,35 @@ export interface EngineAcousticDefinition {
   readonly parameters: unknown;
 }
 
-/** Original FJ33 reference parameters; continuous sub-idle envelopes live in the renderer. */
-export const FJ33_ACOUSTICS: EngineAcousticProfile = Object.freeze({
-  idleN1Pct: 24.3, idleN1SpanPct: 75.7, thrustReferenceLbf: 1846, fuelReferencePps: 0.25,
-  n1ReferenceHz: 2500, n2ReferenceHz: 6000, fanMix: 3.3 / (1 + 3.3),
-  fanToneGain: 0.30, coreToneGain: 0.30, fanNoiseBaseGain: 0.10, fanNoisePowerGain: 0.55,
-  bypassCenterHz: 900, bypassPowerHz: 1800, bypassGain: 0.28,
-  jetBaseHz: 800, jetPowerHz: 5200, jetGain: 0.42,
-  combustorHz: 90, combustorHighHz: 400, combustorGain: 0.55,
-  outputGain: 0.9, afterburnerJetGain: 0, afterburnerJetHz: 6000,
-  // High synthesis controls, not measured FJ33 transfer functions or spectra.
-  // No shock-associated component is asserted for this installation.
-  highFineMixGain: 0.16, highFineMixHz: 4200, highShockGain: 0, highShockHz: 1500,
-  highRearMixDirectivity: 0.25, highShockDirectivity: 0,
-  highCockpitGain: 0.12589254117941673, highCockpitHz: 1400,
-});
+/** Populated by installed engine mods; no hardware defaults live in the host. */
+const DEFINITIONS = new OwnedRegistry<EngineAcousticDefinition>();
 
-export const FJ33_DEFINITION: EngineAcousticDefinition = Object.freeze({
-  id: "fj33-reference",
-  engineClass: "turbofan", manufacturerFamily: "Williams FJ33/FJ44", rendererId: "procedural-jet-v1",
-  telemetry: JSBSIM_TURBINE_TELEMETRY,
-  label: "Williams FJ33 procedural sound",
-  approximation: "Synthetic engine tones; acoustic calibration pending.",
-  parameters: FJ33_ACOUSTICS,
+export const MULTIROTOR_ELECTRIC_TELEMETRY: NativeEngineTelemetrySchema = Object.freeze({
+  id: "multirotor-electric-v1", required: [] as const, paths: {},
+  combustion: { rule: "running" as const, minimumFuelFlowPps: 0 },
 });
-
-export const F135_DEFINITION: EngineAcousticDefinition = Object.freeze({
-  id: "f135-approximation",
-  engineClass: "turbofan", manufacturerFamily: "Pratt & Whitney F135", rendererId: "procedural-jet-v1",
-  telemetry: JSBSIM_THERMAL_TURBINE_TELEMETRY,
-  label: "Approximate F135 procedural sound",
-  approximation: "One main-engine source with exhaust-dominant broadband roar and native burned afterburner fuel. Timbre, fuel-fraction shaping and loudness are uncalibrated; separate lift-fan sound is not modeled.",
-  parameters: Object.freeze({
-    // Idle and dry thrust come from the installed trial FDM. Everything else
-    // is an artistic starting point. F-35B measurements show angle/power-
-    // dependent BROADBAND peaks, not rotor tones (DOI 10.2514/1.J057992).
-    idleN1Pct: 30, idleN1SpanPct: 70, thrustReferenceLbf: 28_000, fuelReferencePps: 8,
-    n1ReferenceHz: 1800, n2ReferenceHz: 3800, fanMix: 0.18,
-    fanToneGain: 0.10, coreToneGain: 0.07, fanNoiseBaseGain: 0.04, fanNoisePowerGain: 0.20,
-    bypassCenterHz: 450, bypassPowerHz: 1000, bypassGain: 0.08,
-    jetBaseHz: 180, jetPowerHz: 2200, jetGain: 2.4,
-    combustorHz: 90, combustorHighHz: 550, combustorGain: 0.85,
-    outputGain: 1.1, afterburnerJetGain: 2.5, afterburnerJetHz: 4200,
-    // Direction-dependent component decomposition is evidence-led; these
-    // numeric shapes are explicit surrogates pending measured calibration.
-    highFineMixGain: 0.85, highFineMixHz: 2600, highShockGain: 0.8, highShockHz: 1600,
-    highRearMixDirectivity: 0.65, highShockDirectivity: 0.65,
-    highCockpitGain: 0.1, highCockpitHz: 1000,
-  }),
-});
-
-/** Four-stroke IO320 and the installed fixed-pitch two-blade propeller.
- * Counts/rated values come from the installed engine/propeller data; gains and
- * spectral shapes are original synthesis controls, not measured acoustics. */
-export const IO320_ACOUSTICS: PistonAcousticProfile = Object.freeze({
-  cylinders: 4, strokeCycle: 4, propellerBlades: 2, ratedRpm: 2700, ratedPowerHp: 160,
-  firingGain: 0.70, propellerGain: 0.45, mechanicalGain: 0.12,
-  exhaustNoiseGain: 0.28, propellerNoiseGain: 0.12,
-  pistonOutputGain: 0.95, pistonCockpitGain: 0.30, pistonCockpitHz: 1250,
-});
-export const IO320_DEFINITION: EngineAcousticDefinition = Object.freeze({
-  id: "io320-piston", engineClass: "piston", manufacturerFamily: "Lycoming O-320/IO-320",
-  rendererId: "procedural-piston-v1", telemetry: JSBSIM_PISTON_TELEMETRY,
-  label: "IO320 piston and propeller procedural sound",
-  approximation: "Original four-cylinder firing, mechanical, exhaust and two-blade propeller synthesis from native crankshaft RPM, propeller RPM and shaft power; timbre and loudness are approximate.",
-  parameters: IO320_ACOUSTICS,
-});
-
-/** Open definition keys; renderer assignment is independent of engine class/family. */
-const DEFINITIONS = new Map<string, EngineAcousticDefinition>([
-  [FJ33_DEFINITION.id, FJ33_DEFINITION], [F135_DEFINITION.id, F135_DEFINITION],
-  [IO320_DEFINITION.id, IO320_DEFINITION],
-]);
 
 export function telemetryById(id: string): NativeEngineTelemetrySchema | undefined {
+  if (id === MULTIROTOR_ELECTRIC_TELEMETRY.id) return MULTIROTOR_ELECTRIC_TELEMETRY;
   if (id === JSBSIM_PISTON_TELEMETRY.id) return JSBSIM_PISTON_TELEMETRY;
   if (id === JSBSIM_THERMAL_TURBINE_TELEMETRY.id) return JSBSIM_THERMAL_TURBINE_TELEMETRY;
   if (id === JSBSIM_TURBINE_TELEMETRY.id) return JSBSIM_TURBINE_TELEMETRY;
   return undefined;
 }
 
-/** An engine mod installs its acoustic profile. A built-in id stays the object the rest of the app already holds. */
-export function registerEngineAcousticDefinition(definition: EngineAcousticDefinition): void {
-  if (!DEFINITIONS.has(definition.id)) DEFINITIONS.set(definition.id, definition);
+/** Installed mod data is authoritative, including a refreshed profile with the same id. */
+export function registerEngineAcousticDefinition(definition: EngineAcousticDefinition, owner?: string): void {
+  DEFINITIONS.set(definition.id, definition, owner);
 }
 
 export function getEngineAcousticDefinition(id: string): EngineAcousticDefinition | undefined {
   return DEFINITIONS.get(id);
 }
 
-/** Encoder for the current reference renderer; absent setup is allowed only in low-level legacy fixtures. */
-export function acousticProfileValues(definition?: EngineAcousticDefinition): number[] {
-  if (definition?.rendererId === "procedural-piston-v1") return pistonProfileValues(definition);
-  const parameters = definition === undefined ? FJ33_ACOUSTICS : definition.parameters;
-  if (!parameters || typeof parameters !== "object") throw new Error("Missing procedural jet parameters");
-  const values = parameters as Record<string, unknown>;
-  const encoded = JET_ACOUSTIC_PROFILE_FIELDS.map(field => {
-    const value = values[field];
-    if (typeof value !== "number" || !Number.isFinite(value) || value < 0 || value > 100_000) throw new Error(`Invalid procedural jet parameter ${field}`);
-    return value;
-  });
-  const at = (field: keyof EngineAcousticProfile): number => encoded[JET_ACOUSTIC_PROFILE_FIELDS.indexOf(field)];
-  if (at("idleN1Pct") >= 100 || at("idleN1SpanPct") <= 0 || at("idleN1SpanPct") > 100
-    || at("thrustReferenceLbf") < 1 || at("fuelReferencePps") <= 0 || at("fanMix") > 1) {
-    throw new Error("Invalid procedural jet reference range");
-  }
-  const gains: (keyof EngineAcousticProfile)[] = ["fanToneGain", "coreToneGain", "fanNoiseBaseGain",
-    "fanNoisePowerGain", "bypassGain", "jetGain", "combustorGain", "outputGain", "afterburnerJetGain",
-    "highFineMixGain", "highShockGain"];
-  if (gains.some(field => at(field) > 16)) throw new Error("Invalid procedural jet gain range");
-  const bounded: (keyof EngineAcousticProfile)[] = ["highRearMixDirectivity", "highShockDirectivity", "highCockpitGain"];
-  if (bounded.some(field => at(field) > 1)) throw new Error("Invalid High acoustic shape range");
-  const frequencies: (keyof EngineAcousticProfile)[] = ["highFineMixHz", "highShockHz", "highCockpitHz"];
-  if (frequencies.some(field => at(field) < 20 || at(field) > 20_000)) throw new Error("Invalid High acoustic frequency range");
-  return [...encoded, 0, ...PISTON_ACOUSTIC_PROFILE_FIELDS.map(() => 0)];
-}
+export function unregisterEngineAcousticDefinition(id: string, owner?: string): void { DEFINITIONS.remove(id, owner); }
 
-export function pistonProfileValues(definition: EngineAcousticDefinition): number[] {
-  if (definition.engineClass !== "piston" || definition.rendererId !== "procedural-piston-v1"
-    || !definition.parameters || typeof definition.parameters !== "object") throw new Error("Missing procedural piston parameters");
-  const parameters = definition.parameters as Record<string, unknown>;
-  const values = PISTON_ACOUSTIC_PROFILE_FIELDS.map(field => {
-    const value = parameters[field];
-    if (typeof value !== "number" || !Number.isFinite(value) || value < 0 || value > 100_000) throw new Error(`Invalid procedural piston parameter ${field}`);
-    return value;
-  });
-  const at = (field: keyof PistonAcousticProfile) => values[PISTON_ACOUSTIC_PROFILE_FIELDS.indexOf(field)];
-  if (!Number.isInteger(at("cylinders")) || at("cylinders") < 1 || at("cylinders") > 16
-    || ![2, 4].includes(at("strokeCycle")) || !Number.isInteger(at("propellerBlades"))
-    || at("propellerBlades") < 1 || at("propellerBlades") > 8 || at("ratedRpm") < 100
-    || at("ratedRpm") > 10_000 || at("ratedPowerHp") < 1 || at("pistonCockpitGain") > 1
-    || at("pistonCockpitHz") < 20 || at("pistonCockpitHz") > 20_000) throw new Error("Invalid procedural piston reference range");
-  if (["firingGain", "propellerGain", "mechanicalGain", "exhaustNoiseGain", "propellerNoiseGain", "pistonOutputGain"]
-    .some(field => at(field as keyof PistonAcousticProfile) > 16)) throw new Error("Invalid procedural piston gain range");
-  return [...JET_ACOUSTIC_PROFILE_FIELDS.map(() => 0), 1, ...values];
+/** Compatibility encoder for legacy validation callers; no hardware default is inferred. */
+export function acousticProfileValues(definition: EngineAcousticDefinition | undefined): number[] {
+  if (!definition) throw new Error("An explicit engine acoustic definition is required.");
+  return definition.rendererId === "procedural-piston-v1" ? pistonProfileValues(definition) : turbineProfileValues(definition);
 }

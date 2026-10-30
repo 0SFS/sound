@@ -1,8 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { AUDIO_EVENT, AVAILABILITY, type AudioSnapshotInit } from "../src/audioSnapshot";
-import {
-  bandPower, createDspHarness, difference, dominantFrequency, peak, rms, TIER, type DspHarness,
-} from "../src/dspHarness";
+import { bandPower, difference, dominantFrequency, peak, rms, TIER, type DspHarness } from "../src/dspHarness";
+import { createReferenceHarness as createDspHarness } from "./fixtures/engineProfiles";
 
 /**
  * These run the ACTUAL compiled audio-dsp.wasm. They test DSP behaviour and

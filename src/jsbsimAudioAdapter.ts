@@ -1,5 +1,5 @@
 import type { JSBSimSdk } from "@felipegalind0/jsbsim";
-import { AVAILABILITY, type AudioSnapshotInit } from "./audioSnapshot";
+import { AVAILABILITY, type AudioSnapshotInit, type ElectricRotorSnapshot } from "./audioSnapshot";
 import { propertyInCatalog } from "@0sfs/logging/flightRecorder";
 import type { ResolvedEngineSoundSource } from "./aircraftAudioProfiles";
 import type { EngineAcousticDefinition, EngineTelemetryField } from "./engineAcousticDefinitions";
@@ -30,6 +30,8 @@ export interface AudioAdapterDiagnostics {
   combustionSource: CombustionSource;
   /** Engine acoustic centre in the aircraft visual frame (metres). */
   sourceOffset: readonly [number, number, number];
+  sourceOffsets?: readonly (readonly [number, number, number])[];
+  sourceProfiles?: readonly EngineAcousticDefinition[];
   /** The installed engine definition, independent of aircraft identity. */
   profile?: EngineAcousticDefinition;
   sourceId?: string;
@@ -74,6 +76,10 @@ export interface AudioAdapterReading {
   shaftPowerHp?: number;
   /** Native thruster's exhaust axis in the aircraft visual frame; NaNs mean unavailable. */
   sourceAxis?: [number, number, number];
+  electricRotors?: readonly ElectricRotorSnapshot[];
+  airDensityKgM3?: number;
+  airVelocityBodyMps?: readonly [number, number, number];
+  armed?: boolean;
 }
 
 /**
@@ -365,6 +371,10 @@ export function toSnapshot(
     sequence: pose.sequence,
     epoch: pose.epoch,
     simTimeS: reading.simTimeS,
+    electricRotors: reading.electricRotors,
+    airDensityKgM3: reading.airDensityKgM3,
+    airVelocityBodyMps: reading.airVelocityBodyMps,
+    armed: reading.armed,
     availability: (reading.availability & ~(AVAILABILITY.POSE | AVAILABILITY.SOURCE_AXIS))
       | (pose.poseValid ? AVAILABILITY.POSE : 0)
       | (pose.poseValid && pose.sourceAxisValid ? AVAILABILITY.SOURCE_AXIS : 0),

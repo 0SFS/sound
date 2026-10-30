@@ -62,7 +62,15 @@
       "types": "./scripts/validation/audio/engineProfileReference.d.mts",
       "default": "./scripts/validation/audio/engineProfileReference.mjs"
     },
-    "./package.json": "./package.json"
+    "./package.json": "./package.json",
+    "./electricAudioAdapter": {
+      "source": "./src/electricAudioAdapter.ts",
+      "default": "./src/electricAudioAdapter.ts"
+    },
+    "./installAudioMod": {
+      "source": "./src/installAudioMod.ts",
+      "default": "./src/installAudioMod.ts"
+    }
   },
   "peerDependencies": {
     "@0sfs/aircraft": "0.1.0",
@@ -70,7 +78,12 @@
     "@0sfs/logging": "0.1.0",
     "@babylonjs/core": "8.56.2",
     "@felipegalind0/jsbsim": "1.2.4-fork.21",
-    "foss-earth": "0.1.0"
+    "foss-earth": "0.1.0",
+    "@0sfs/engine-sound": "0.1.0",
+    "@0sfs/turbine-sound": "0.1.0",
+    "@0sfs/piston-sound": "0.1.0",
+    "@0sfs/electric-sound": "0.1.0",
+    "@0sfs/mods": "0.1.0"
   },
   "peerDependenciesMeta": {
     "@0sfs/aircraft": {
@@ -89,6 +102,21 @@
       "optional": true
     },
     "foss-earth": {
+      "optional": true
+    },
+    "@0sfs/engine-sound": {
+      "optional": true
+    },
+    "@0sfs/turbine-sound": {
+      "optional": true
+    },
+    "@0sfs/piston-sound": {
+      "optional": true
+    },
+    "@0sfs/electric-sound": {
+      "optional": true
+    },
+    "@0sfs/mods": {
       "optional": true
     }
   },

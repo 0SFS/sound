@@ -1,9 +1,9 @@
 import { describe, expect, it } from "vitest";
 import { AVAILABILITY, type AudioSnapshotInit } from "../src/audioSnapshot";
-import {
-  F135_DEFINITION, FJ33_DEFINITION, type EngineAcousticDefinition, type EngineAcousticProfile,
-} from "../src/engineAcousticDefinitions";
-import { bandPower, createDspHarness, difference, dominantFrequency, peak, rms, TIER, type DspHarness } from "../src/dspHarness";
+import { type EngineAcousticDefinition, type EngineAcousticProfile } from "../src/engineAcousticDefinitions";
+import { F135_DEFINITION, FJ33_DEFINITION } from "./fixtures/engineProfiles";
+import { bandPower, difference, dominantFrequency, peak, rms, TIER, type DspHarness } from "../src/dspHarness";
+import { createReferenceHarness as createDspHarness } from "./fixtures/engineProfiles";
 
 const full = Object.values(AVAILABILITY).reduce((bits, bit) => bits | bit, 0);
 const engines = [FJ33_DEFINITION, F135_DEFINITION] as const;

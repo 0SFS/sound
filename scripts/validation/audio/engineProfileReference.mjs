@@ -4,6 +4,7 @@
 // @0sfs/sound/validation/engineProfileReference.
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
+import { createFamilyPipeline } from "./familyPipeline.mjs";
 import { readAbi } from "../../../benchmarks/audio/renderSweep.mjs";
 
 const hash = bytes => createHash("sha256").update(bytes).digest("hex");
@@ -34,6 +35,7 @@ export async function renderReference(wasmPath, headerPath, options) {
   const dsp = instance.exports;
   dsp._initialize();
   if (!dsp.osfs_audio_init(options.sampleRate, 128, 0x53463530)) throw new Error("DSP refused fixture");
+  const pipeline=await createFamilyPipeline(dsp,{sampleRate:options.sampleRate,engine:options.engine ?? "FJ33"});
   dsp.osfs_audio_set_tier(options.tier);
   dsp.osfs_audio_set_gains(1, 1, 1, 1, 0);
   dsp.osfs_audio_set_tire(900);
@@ -57,7 +59,7 @@ export async function renderReference(wasmPath, headerPath, options) {
       nextPublish += 1 / 60;
     }
     const count = Math.min(128, frames - offset);
-    dsp.osfs_audio_process(offset, count);
+    pipeline.process(offset, count);
     left.set(new Float32Array(dsp.memory.buffer, dsp.osfs_audio_out(0), count), offset);
     right.set(new Float32Array(dsp.memory.buffer, dsp.osfs_audio_out(1), count), offset);
   }

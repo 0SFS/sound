@@ -8,6 +8,7 @@
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import path from "node:path";
+import { verifyFamily } from "../../engine-sound/scripts/family-artifact.mjs";
 import { fileURLToPath } from "node:url";
 
 const root = fileURLToPath(new URL("../../fly/", import.meta.url));
@@ -58,8 +59,25 @@ export async function verifyAudioArtifact({ dist = null } = {}) {
   const missing = provenance.exports.filter((name) => !exported.has(name));
   if (missing.length > 0) throw new Error("Missing WASM exports: " + missing.join(", "));
 
+  const families = [];
+  for (const family of ["turbine-sound", "piston-sound"]) {
+    const familyReport = await verifyFamily(new URL(`../../${family}/`, import.meta.url));
+    const manifest = JSON.parse(readFileSync(path.join(root, "..", family, "public/0sfs-mod.json")));
+    if(manifest.audioRenderer.wasm.sha256 !== familyReport.sha256) throw new Error(`${family} manifest/artifact hash mismatch`);
+    families.push({...familyReport,family});
+  }
+  const electricRoot=path.join(root,"../electric-sound");
+  const electricReceipt=JSON.parse(readFileSync(path.join(electricRoot,"wasm/build-metadata.json")));
+  for(const [file,digest] of Object.entries(electricReceipt.inputs)) if(sha256(readFileSync(path.join(electricRoot,file)))!==digest)throw new Error(`Electric source drift ${file}`);
+  const electricManifest=JSON.parse(readFileSync(path.join(electricRoot,"public/0sfs-mod.json")));
+  const electricBytes=readFileSync(path.join(electricRoot,"public",electricManifest.audioRenderer.wasm.path));
+  const electricHash=sha256(electricBytes);
+  if(electricHash!==electricManifest.audioRenderer.wasm.sha256)throw new Error("Electric manifest/artifact hash mismatch");
+  for(const [file,record] of Object.entries(electricReceipt.outputs)){const content=readFileSync(path.join(electricRoot,file));if(sha256(content)!==record.sha256||content.length!==record.bytes)throw new Error(`Electric artifact drift ${file}`);}
+  families.push({family:"electric-sound",sha256:electricHash,bytes:electricBytes.length});
   const report = {
     artifact: "audio-dsp.wasm",
+    families,
     license: provenance.license,
     bytes: bytes.length,
     sha256: actual,
@@ -76,6 +94,8 @@ export async function verifyAudioArtifact({ dist = null } = {}) {
     const emittedWorklet = files.filter((file) => /dspProcessor.*\.js$/.test(file));
     if (emittedWasm.length === 0) throw new Error("The production bundle emitted no audio DSP wasm.");
     if (emittedWorklet.length === 0) throw new Error("The production bundle emitted no audio worklet.");
+    const emittedHashes=new Set(files.filter(file=>file.endsWith(".wasm")).map(file=>sha256(readFileSync(path.join(distRoot,file)))));
+    for(const family of families)if(!emittedHashes.has(family.sha256))throw new Error(`Production bundle missing ${family.family} WASM`);
     const bundled = readFileSync(path.join(distRoot, emittedWasm[0]));
     if (sha256(bundled) !== actual) {
       throw new Error("The emitted wasm differs from the committed artifact.");

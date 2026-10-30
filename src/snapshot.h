@@ -7,7 +7,7 @@
 
 namespace osfs_audio {
 
-constexpr int kSnapshotVersion = 5;
+constexpr int kSnapshotVersion = 6;
 
 // AUDIO_SNAPSHOT_FIELDS
 enum SnapshotSlot {
@@ -42,6 +42,12 @@ enum SnapshotSlot {
   kAfterburnerBurnedFuelFlowKgSec,
   kEngineRpm, kPropellerRpm, kShaftPowerHp,
 
+  kElectricSourceCount, kAirDensityKgM3, kAirVelocityX, kAirVelocityY, kAirVelocityZ, kArmed,
+  kRotor0Rpm, kRotor0ThrustN, kRotor0TorqueNm, kRotor0InducedVelocityMps, kRotor0Vrs, kRotor0Valid, kRotor0SourceX, kRotor0SourceY, kRotor0SourceZ, kRotor0SourceVelX, kRotor0SourceVelY, kRotor0SourceVelZ, kRotor0AxisX, kRotor0AxisY, kRotor0AxisZ, kRotor0GroundReflectionM,
+  kRotor1Rpm, kRotor1ThrustN, kRotor1TorqueNm, kRotor1InducedVelocityMps, kRotor1Vrs, kRotor1Valid, kRotor1SourceX, kRotor1SourceY, kRotor1SourceZ, kRotor1SourceVelX, kRotor1SourceVelY, kRotor1SourceVelZ, kRotor1AxisX, kRotor1AxisY, kRotor1AxisZ, kRotor1GroundReflectionM,
+  kRotor2Rpm, kRotor2ThrustN, kRotor2TorqueNm, kRotor2InducedVelocityMps, kRotor2Vrs, kRotor2Valid, kRotor2SourceX, kRotor2SourceY, kRotor2SourceZ, kRotor2SourceVelX, kRotor2SourceVelY, kRotor2SourceVelZ, kRotor2AxisX, kRotor2AxisY, kRotor2AxisZ, kRotor2GroundReflectionM,
+  kRotor3Rpm, kRotor3ThrustN, kRotor3TorqueNm, kRotor3InducedVelocityMps, kRotor3Vrs, kRotor3Valid, kRotor3SourceX, kRotor3SourceY, kRotor3SourceZ, kRotor3SourceVelX, kRotor3SourceVelY, kRotor3SourceVelZ, kRotor3AxisX, kRotor3AxisY, kRotor3AxisZ, kRotor3GroundReflectionM,
+
   kSnapshotSize,
 };
 // END AUDIO_SNAPSHOT_FIELDS
@@ -64,6 +70,7 @@ enum Availability {
   kAvailEngineRpm = 1 << 13,
   kAvailPropellerRpm = 1 << 14,
   kAvailShaftPower = 1 << 15,
+  kAvailElectricRotors = 1 << 16, kAvailDensity = 1 << 17,
 };
 // END AVAILABILITY
 

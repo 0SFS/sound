@@ -10,7 +10,7 @@
 // WebAssembly.Module arrives by postMessage and is instantiated synchronously.
 
 /** Kept in sync with ../audioSnapshot.ts by audioSnapshot.test.ts. */
-const SNAPSHOT_SIZE = 37;
+const SNAPSHOT_SIZE = 107;
 const EVENT_SIZE = 4;
 const EVENT_CAPACITY = 32;
 const BATCH_SNAPSHOTS = 8;
@@ -30,6 +30,12 @@ class OsfsDspProcessor extends AudioWorkletProcessor {
     this.ready = false;
     this.failure = null;
     this.exports = null;
+    this.voice = null;
+    this.voiceCount = 1;
+    this.voiceInput = null;
+    this.voiceOutput = null;
+    this.hostVoiceInput = null;
+    this.hostVoiceOutput = null;
     this.batch = null;
     this.outputs = null;
     this.stats = null;
@@ -71,8 +77,20 @@ class OsfsDspProcessor extends AudioWorkletProcessor {
       // Initial state rides in with the module, so the first rendered quantum
       // already has it; a port message can land after rendering has begun.
       const initial = settings.initial || null;
+      this.voiceCount = (initial && initial.voiceCount) || 1;
+      if (settings.voiceModule) {
+        this.voice = new WebAssembly.Instance(settings.voiceModule, {}).exports;
+        if (typeof this.voice._initialize === "function") this.voice._initialize();
+        if (this.voice.osfs_voice_abi_version() !== 1 || !this.voice.osfs_voice_init(sampleRate, 1024, seed, this.voiceCount)) throw new Error("Engine voice ABI or setup mismatch");
+        this.voiceInput = new Float64Array(this.voice.memory.buffer, this.voice.osfs_voice_input_ptr(), 4 * 1024 * 32);
+        this.voiceOutput = new Float64Array(this.voice.memory.buffer, this.voice.osfs_voice_output_ptr(), 4 * 2 * 1024);
+      }
+      this.hostVoiceInput = new Float64Array(this.exports.memory.buffer, this.exports.osfs_audio_voice_input_ptr(), 4 * 1024 * 32);
+      this.hostVoiceOutput = new Float64Array(this.exports.memory.buffer, this.exports.osfs_audio_voice_output_ptr(), 4 * 2 * 1024);
+
       if (initial) {
-        if (initial.profile) this.applyProfile(initial.profile);
+        this.applySources(initial.sources, this.voiceCount);
+        if (initial.profiles || initial.profile) this.applyProfile(initial.profiles || [initial.profile]);
         if (initial.gains) this.applyGains(initial.gains);
         if (initial.limits) this.applyLimits(initial.limits);
         if (typeof initial.tier === "number") this.exports.osfs_audio_set_tier(initial.tier);
@@ -123,11 +141,25 @@ class OsfsDspProcessor extends AudioWorkletProcessor {
   }
 
   /** Setup only: fixed size, no allocation or memory growth in the DSP. */
-  applyProfile(values) {
-    const size = this.exports.osfs_audio_profile_size();
-    if (!Array.isArray(values) || values.length !== size) throw new Error("Acoustic profile ABI mismatch");
-    new Float64Array(this.exports.memory.buffer, this.exports.osfs_audio_profile_ptr(), size).set(values);
-    if (!this.exports.osfs_audio_commit_profile()) throw new Error("Invalid acoustic profile");
+  applySources(sources, count) {
+    const color = sources || {};
+    this.exports.osfs_audio_set_source_type(color.sourceType === "electric" ? 1 : 0);
+    this.exports.osfs_audio_set_sources(count || 1, color.interiorGain ?? 0.12589254117941673,
+      color.interiorHz ?? 1200, color.highInteriorGain ?? color.interiorGain ?? 0.12589254117941673,
+      color.highInteriorHz ?? color.interiorHz ?? 1400);
+  }
+
+  applyProfile(profiles) {
+    if (!this.voice) throw new Error("No engine voice module is installed");
+    if (!Array.isArray(profiles) || !Array.isArray(profiles[0])) profiles = [profiles];
+    if (profiles.length !== this.voiceCount) throw new Error("Engine voice profile count mismatch");
+    const size = this.voice.osfs_voice_profile_size();
+    for (let voice = 0; voice < profiles.length; voice += 1) {
+      const values = profiles[voice];
+      if (!Array.isArray(values) || values.length !== size) throw new Error("Acoustic profile ABI mismatch");
+      new Float64Array(this.voice.memory.buffer, this.voice.osfs_voice_profile_ptr(voice), size).set(values);
+      if (!this.voice.osfs_voice_commit_profile(voice)) throw new Error("Invalid acoustic profile");
+    }
   }
 
   /** The pilot's limits for each tier, by tier index (osfs.sound.<tier>.*). */
@@ -150,12 +182,12 @@ class OsfsDspProcessor extends AudioWorkletProcessor {
         return;
       case "profile":
         if (this.exports) {
-          try { this.applyProfile(message.values); } catch (error) {
+          try { this.applySources(message.sources, message.voiceCount || this.voiceCount); this.applyProfile(message.profiles || message.values); } catch (error) {
             this.failure = String((error && error.message) || error);
             this.ready = false;
             this.port.postMessage({ type: "failed", reason: this.failure });
           }
-        } else this.pendingProfile = message.values;
+        } else this.pendingProfile = message.profiles || message.values;
         return;
       case "tier":
         if (this.exports) this.exports.osfs_audio_set_tier(message.tier);
@@ -180,6 +212,7 @@ class OsfsDspProcessor extends AudioWorkletProcessor {
         return;
       case "reset":
         if (this.exports) this.exports.osfs_audio_reset();
+        if (this.voice) this.voice.osfs_voice_reset();
         return;
       case "batch":
         this.ingest(message.buffer);
@@ -227,7 +260,7 @@ class OsfsDspProcessor extends AudioWorkletProcessor {
     let guard = this.sabSlots;
     while (read !== write && guard-- > 0) {
       const offset = (read % this.sabSlots) * BATCH_LENGTH;
-      this.batch.set(this.sabData.subarray(offset, offset + BATCH_LENGTH));
+      for (let i = 0; i < BATCH_LENGTH; i += 1) this.batch[i] = this.sabData[offset + i];
       this.exports.osfs_audio_commit_batch();
       read = (read + 1) | 0;
       Atomics.store(this.sabControl, SAB_READ, read);
@@ -245,13 +278,31 @@ class OsfsDspProcessor extends AudioWorkletProcessor {
     }
 
     if (this.sabControl) this.drainSab();
-    this.exports.osfs_audio_process(currentFrame, frames);
+    this.exports.osfs_audio_prepare(currentFrame, frames);
+    if (this.voice) {
+      // Bounded copies between independent linear memories; no sample-wise WASM calls or allocations.
+      for (let voice = 0; voice < this.voiceCount; voice += 1) {
+        const inputBase = voice * 1024 * 32;
+        for (let i = 0; i < frames * 32; i += 1) this.voiceInput[inputBase + i] = this.hostVoiceInput[inputBase + i];
+      }
+      if (!this.voice.osfs_voice_process(frames)) {
+        for (let channel = 0; channel < output.length; channel += 1) output[channel].fill(0);
+        this.failure = "Engine voice rejected an audio block";
+        this.port.postMessage({type: "failed", reason: this.failure});
+        return false;
+      }
+      for (let voice = 0; voice < this.voiceCount; voice += 1) for (let bus = 0; bus < 2; bus += 1) {
+        const outputBase = (voice * 2 + bus) * 1024;
+        for (let i = 0; i < frames; i += 1) this.hostVoiceOutput[outputBase + i] = this.voiceOutput[outputBase + i];
+      }
+    }
+    this.exports.osfs_audio_mix(currentFrame, frames);
 
-    const left = this.outputs[0].subarray(0, frames);
-    const right = this.outputs[1].subarray(0, frames);
-    output[0].set(left);
-    if (output.length > 1) output[1].set(right);
-    for (let channel = 2; channel < output.length; channel += 1) output[channel].set(left);
+    // Copy into browser-owned channel buffers without allocating typed-array views.
+    for (let channel = 0; channel < output.length; channel += 1) {
+      const source = this.outputs[channel === 1 ? 1 : 0];
+      for (let frame = 0; frame < frames; frame += 1) output[channel][frame] = source[frame];
+    }
 
     this.framesSinceStats += frames;
     if (this.framesSinceStats >= this.statsIntervalFrames) {

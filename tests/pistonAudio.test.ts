@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 import { AVAILABILITY, type AudioSnapshotInit } from "../src/audioSnapshot";
-import { createDspHarness, difference, rms, TIER } from "../src/dspHarness";
-import { IO320_ACOUSTICS, IO320_DEFINITION, type PistonAcousticProfile } from "../src/engineAcousticDefinitions";
+import { difference, rms, TIER } from "../src/dspHarness";
+import { createReferenceHarness as createDspHarness } from "./fixtures/engineProfiles";
+import { type PistonAcousticProfile } from "../src/engineAcousticDefinitions";
+import { IO320_ACOUSTICS, IO320_DEFINITION } from "./fixtures/engineProfiles";
 
 const native = AVAILABILITY.ENGINE_RPM | AVAILABILITY.PROPELLER_RPM | AVAILABILITY.SHAFT_POWER
   | AVAILABILITY.COMBUSTION | AVAILABILITY.FUEL_FLOW | AVAILABILITY.POSE;

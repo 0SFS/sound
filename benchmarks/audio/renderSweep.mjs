@@ -16,6 +16,7 @@
 
 import { createHash } from "node:crypto";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { createFamilyPipeline } from "../../scripts/validation/audio/familyPipeline.mjs";
 import { generateSweepText } from "./generate-sweep.mjs";
 import os from "node:os";
 import path from "node:path";
@@ -188,6 +189,7 @@ async function renderOnce(module, abi, rows, { tier, sampleRate, pass, seconds, 
   const x = instance.exports;
   x._initialize();
   if (!x.osfs_audio_init(sampleRate, QUANTUM, SEED)) throw new Error(`Core refused ${sampleRate} Hz`);
+  const pipeline=await createFamilyPipeline(x,{sampleRate});
   if (x.osfs_audio_snapshot_size() !== abi.snapshotSize || x.osfs_audio_batch_length() !== abi.batchLength) {
     throw new Error("ABI mismatch between snapshot.h and the compiled core");
   }
@@ -290,7 +292,7 @@ async function renderOnce(module, abi, rows, { tier, sampleRate, pass, seconds, 
     commit(pending);
 
     const started = performance.now();
-    x.osfs_audio_process(frame, frames);
+    pipeline.process(frame, frames);
     timings[quantum++] = performance.now() - started;
 
     const outL = new Float32Array(x.memory.buffer, x.osfs_audio_out(0), frames);

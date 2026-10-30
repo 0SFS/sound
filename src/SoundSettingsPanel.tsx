@@ -17,6 +17,7 @@ const percent = (value: number): string => Number.isFinite(value) ? `${value.toF
 
 /** Shows native engine state, so "the engine went quiet" can be told apart from a sound fault. */
 function engineLine(engine: NonNullable<FlightAudioStatus["engine"]>): string {
+  if (engine.kind === "electric") return `Motor telemetry: ${(engine.rotorRpm ?? []).map(rpm => `${Math.round(rpm)} RPM`).join(" · ")}`;
   if (engine.kind === "piston") {
     const rpm = (value: number | undefined): string => value !== undefined && Number.isFinite(value)
       ? `${Math.round(value)} rpm` : "n/a";
@@ -161,7 +162,9 @@ export function SoundSettingsPanel({ state, onAction }: {
       <p className="flight-panel__hint">
         {state.telemetry?.profileLabel && <>{state.telemetry.profileLabel}. </>}
         {state.telemetry
-          ? `Engine sound follows the flight model. Combustion is read from ${
+          ? state.telemetry.kind === "electric" || state.engine?.kind === "electric"
+            ? "Motor and propeller sound follow each rotor’s simulated speed and load."
+            : `Engine sound follows the flight model. Combustion is read from ${
             COMBUSTION_SOURCE_LABELS[state.telemetry.combustionSource] ?? state.telemetry.combustionSource}.`
           : "This aircraft has no engine sound model; only the tire cue plays."}
         {" "}Tire sound and its volume are under Aircraft → Ground handling. For live engine data, click

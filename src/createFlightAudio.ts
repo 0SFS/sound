@@ -1,3 +1,4 @@
+import { assertWasmSandbox, WASM_AUDIO_MAX_MEMORY_PAGES } from "@0sfs/mods/wasmRunner";
 import { AUDIO_EVENT, AVAILABILITY } from "./audioSnapshot";
 import {
   AVAILABILITY_LABELS, TIER_INDEX, TIER_ORDER, createFallbackController,
@@ -9,7 +10,7 @@ import { createPortTransport, createSabTransport, isSharedMemoryAvailable, type 
 import { toSnapshot, type AudioAdapter, type AudioAdapterReading } from "./jsbsimAudioAdapter";
 import { computeListenerPose, createListenerPose, type ListenerPose, type ListenerPoseInput } from "./audioPose";
 import type { AudioBankInstallation } from "./audioBank";
-import { getAudioRenderer, rendererAdmission, type AudioRendererRegistration } from "./audioRendererRegistry";
+import { AUDIO_HOST_RENDERER, rendererAdmission, type AudioRendererRegistration } from "./audioRendererRegistry";
 
 /**
  * The application's single sound owner.
@@ -56,7 +57,8 @@ export interface FlightAudioStatus {
   /** Last engine telemetry sent to the core; null unless engine sound is running. */
   engine: {
     n1Pct: number; n2Pct: number; fuelFlowPps: number; combustion: boolean; running: boolean;
-    kind?: "piston" | "turbine";
+    kind?: "piston" | "turbine" | "electric";
+    rotorRpm?: readonly number[];
     engineRpm?: number; propellerRpm?: number; shaftPowerHp?: number;
   } | null;
   /** Core timeline counters from the worklet, refreshed at 1 Hz. */
@@ -70,7 +72,7 @@ export interface FlightAudioStatus {
     grains: number; startsPerSecond: number; irMilliseconds: number;
   } | null;
   /** Adapter diagnostics: which combustion rule ran, which properties are absent. */
-  telemetry: { combustionSource: string; missing: readonly string[]; profileLabel?: string; approximation?: string } | null;
+  telemetry: { kind?: string; combustionSource: string; missing: readonly string[]; profileLabel?: string; approximation?: string } | null;
 }
 
 /** What the render loop knows about the view; the facade supplies source geometry and velocity. */
@@ -88,6 +90,7 @@ export interface FlightAudioOptions {
   qualificationContext?: () => AudioQualificationContext | undefined;
   /** Test seams. Production leaves all of these unset. */
   loadWasm?: () => Promise<BufferSource>;
+  loadVoiceWasm?: (url: URL) => Promise<BufferSource>;
   workletModuleUrl?: string;
   capabilityOverrides?: Partial<AudioCapabilities>;
   /** Reports whether the current call runs inside a user activation. */
@@ -239,6 +242,13 @@ export function createFlightAudio(options: FlightAudioOptions): FlightAudioHandl
   let lastSeenSimTime: number | null = null;
   let epochPending = true;
   const pose = createListenerPose();
+  const rotorPoses = Array.from({ length: 4 }, () => createListenerPose());
+  const sourceProfiles = () => adapter?.diagnostics.sourceProfiles ?? (adapter?.diagnostics.profile ? [adapter.diagnostics.profile] : []);
+  const sourceSetup = () => {
+    const profiles = sourceProfiles();
+    return { voiceCount: profiles.length, profiles: renderer ? profiles.map(profile => renderer!.encodeParameters(profile)) : undefined,
+      sources: renderer && profiles[0] ? renderer.installationColor(profiles[0], profiles.length) : undefined };
+  };
   let statsLine = "";
 
   let previousCombustion: boolean | null = null;
@@ -313,7 +323,9 @@ export function createFlightAudio(options: FlightAudioOptions): FlightAudioHandl
       ? {
         n1Pct: lastReading.n1Pct, n2Pct: lastReading.n2Pct, fuelFlowPps: lastReading.fuelFlowPps,
         combustion: lastReading.combustion, running: lastReading.running,
-        kind: adapter?.diagnostics.profile?.engineClass === "piston" ? "piston" : "turbine",
+        kind: adapter?.diagnostics.profile?.engineClass === "electric" ? "electric"
+          : adapter?.diagnostics.profile?.engineClass === "piston" ? "piston" : "turbine",
+        rotorRpm: lastReading.electricRotors?.map(rotor => rotor.rpm),
         engineRpm: lastReading.engineRpm, propellerRpm: lastReading.propellerRpm, shaftPowerHp: lastReading.shaftPowerHp,
       }
       : null,
@@ -332,7 +344,7 @@ export function createFlightAudio(options: FlightAudioOptions): FlightAudioHandl
       : null,
     telemetry: adapter
       ? {
-        combustionSource: adapter.diagnostics.combustionSource, missing: adapter.diagnostics.missing,
+        kind: adapter.diagnostics.profile?.engineClass, combustionSource: adapter.diagnostics.combustionSource, missing: adapter.diagnostics.missing,
         profileLabel: adapter.diagnostics.profile?.label, approximation: adapter.diagnostics.profile?.approximation,
       }
       : null,
@@ -609,21 +621,32 @@ export function createFlightAudio(options: FlightAudioOptions): FlightAudioHandl
     try {
       // Tire-only playback uses the common output kernel with no engine source.
       // This is not a default acoustic definition for an unknown engine.
-      const selectedRenderer = renderer ?? getAudioRenderer("procedural-jet-v1")!;
+      const selectedRenderer = renderer ?? AUDIO_HOST_RENDERER;
       const binaryKey = selectedRenderer.wasmUrl.toString() + "#" + selectedRenderer.abi.id;
-      const [bytes] = await Promise.all([
-        compiled.has(binaryKey) ? null : options.loadWasm
-          ? options.loadWasm()
-          : fetch(selectedRenderer.wasmUrl.toString()).then((response) => {
-            if (!response.ok) throw new Error(`HTTP ${response.status}`);
-            return response.arrayBuffer();
-          }),
+      async function loadBinary(url: URL, key: string, voice: boolean, expectedHash?: string) {
+        const cached = compiled.get(key);
+        if (cached) return cached;
+        const custom = voice ? options.loadVoiceWasm : options.loadWasm;
+        const bytes = custom ? await custom(url) : await fetch(url.toString()).then(response => {
+          if (!response.ok) throw new Error(`HTTP ${response.status}`);
+          return response.arrayBuffer();
+        });
+        if (voice) {
+          const source = bytes instanceof ArrayBuffer ? new Uint8Array(bytes) : new Uint8Array(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+          assertWasmSandbox(source, WASM_AUDIO_MAX_MEMORY_PAGES);
+        }
+        const sha256 = await dspFingerprint(bytes);
+        if (expectedHash && sha256 !== expectedHash) throw new Error("Engine voice module hash mismatch.");
+        const result = { module: await WebAssembly.compile(bytes), sha256 };
+        compiled.set(key, result);
+        return result;
+      }
+      const [host, voice] = await Promise.all([
+        loadBinary(selectedRenderer.wasmUrl, binaryKey, false),
+        renderer?.voiceWasmUrl ? loadBinary(renderer.voiceWasmUrl,
+          renderer.voiceWasmUrl.toString() + "#" + (renderer.voiceSha256 ?? renderer.voiceAbi), true, renderer.voiceSha256) : undefined,
         current.audioWorklet.addModule(options.workletModuleUrl ?? selectedRenderer.workletUrl.toString()),
       ]);
-      if (bytes) {
-        const [module, sha256] = await Promise.all([WebAssembly.compile(bytes), dspFingerprint(bytes)]);
-        compiled.set(binaryKey, { module, sha256 });
-      }
       // A mute, a disable or a dispose while these promises were in flight wins:
       // a late completion must never restart audio.
       if (disposed || generation !== mine || context !== current) {
@@ -637,13 +660,13 @@ export function createFlightAudio(options: FlightAudioOptions): FlightAudioHandl
         numberOfOutputs: 1,
         outputChannelCount: [2],
         processorOptions: {
-          module: compiled.get(binaryKey)!.module,
+          module: host.module,
+          voiceModule: voice?.module,
           maxBlockFrames: 128,
           seed: 0x53463530,
           sab: shared?.sharedBuffer ?? null,
           initial: { tier: TIER_INDEX[held ? "off" : tier], gains: currentGains(), limits: options.tierLimits?.(),
-            profile: renderer && adapter?.diagnostics.profile
-              ? renderer.encodeParameters(adapter.diagnostics.profile) : undefined },
+            ...sourceSetup() },
         },
       });
       node = worklet;
@@ -763,10 +786,14 @@ export function createFlightAudio(options: FlightAudioOptions): FlightAudioHandl
     attachAdapter(next) {
       const admission = next?.diagnostics.profile ? rendererAdmission(next.diagnostics.profile) : null;
       const previousRenderer = renderer;
+      const previousCount = sourceProfiles().length;
       capabilities.bankReady = false;
       node?.port.postMessage({ type: "bandClear" });
       if (adapter && adapter !== next) adapter.dispose();
-      const accepted = next && admission?.supported && next.diagnostics.telemetryAvailable;
+      const profiles = next?.diagnostics.sourceProfiles ?? (next?.diagnostics.profile ? [next.diagnostics.profile] : []);
+      const accepted = next && admission?.supported && next.diagnostics.telemetryAvailable
+        && profiles.length > 0 && profiles.length <= admission.renderer.maxEngineSources
+        && profiles.every(profile => { const result = rendererAdmission(profile); return result.supported && result.renderer.id === admission.renderer.id; });
       adapter = accepted ? next : null;
       renderer = accepted && admission?.supported ? admission.renderer : null;
       capabilities.highSynthesis = renderer?.highSynthesis;
@@ -777,11 +804,12 @@ export function createFlightAudio(options: FlightAudioOptions): FlightAudioHandl
         next.dispose();
         message = admission && !admission.supported ? admission.reason : "Engine sound requires an explicit definition and available native telemetry.";
       }
-      if (context && previousRenderer?.id !== renderer?.id) {
+      if (context && (previousRenderer?.id !== renderer?.id || previousCount !== sourceProfiles().length
+        || previousRenderer?.voiceSha256 !== renderer?.voiceSha256)) {
         generation += 1;
         teardownGraph();
       } else if (renderer && adapter?.diagnostics.profile) {
-        node?.port.postMessage({ type: "profile", values: renderer.encodeParameters(adapter.diagnostics.profile) });
+        node?.port.postMessage({ type: "profile", ...sourceSetup() });
       }
       // A replaced model means a new property batch and a new timeline.
       handle.beginEpoch();
@@ -854,12 +882,22 @@ export function createFlightAudio(options: FlightAudioOptions): FlightAudioHandl
         sourceAxisValid: pose.sourceAxisValid,
         poseValid: pose.valid,
       });
+      if (reading.electricRotors) {
+        snapshot.electricRotors = reading.electricRotors.map((rotor, index) => ({ ...rotor,
+          source: rotorPoses[index].source, sourceVelocity: rotorPoses[index].sourceVelocity,
+          sourceAxis: rotorPoses[index].sourceAxis, groundReflectionM: rotorPoses[index].groundReflectionM,
+        }));
+        snapshot.airDensityKgM3 = reading.airDensityKgM3;
+        snapshot.airVelocityBodyMps = reading.airVelocityBodyMps;
+        snapshot.armed = reading.armed;
+      }
       if (!adapter.diagnostics.telemetryAvailable) {
         // Mandatory renderer input is missing. Keep observing for recovery and
         // fade the engine contribution, while raw adapter telemetry stays raw.
         snapshot.availability &= ~(AVAILABILITY.N1 | AVAILABILITY.N2 | AVAILABILITY.THRUST
           | AVAILABILITY.FUEL_FLOW | AVAILABILITY.COMBUSTION | AVAILABILITY.RUNNING
-          | AVAILABILITY.AUGMENTATION | AVAILABILITY.AFTERBURNER_BURNED_FUEL);
+          | AVAILABILITY.AUGMENTATION | AVAILABILITY.AFTERBURNER_BURNED_FUEL
+          | AVAILABILITY.ELECTRIC_ROTORS | AVAILABILITY.DENSITY);
       }
       transport.publish(snapshot);
       transport.flush();
@@ -867,6 +905,14 @@ export function createFlightAudio(options: FlightAudioOptions): FlightAudioHandl
 
     updateView(view) {
       if (disposed || !adapter || !node || !engineWanted()) return;
+      if (adapter.diagnostics.sourceOffsets) {
+        for (const [index, sourceOffset] of adapter.diagnostics.sourceOffsets.entries()) {
+          computeListenerPose({ ...view, exterior: 1, listenerCockpitBlend: settings.listenerCockpitBlend,
+            sourceOffset, sourceAxis: [0, 1, 0], velocityWorld: lastReading?.velocity ?? ZERO_VELOCITY }, rotorPoses[index]);
+        }
+        Object.assign(pose, rotorPoses[0]);
+        return;
+      }
       computeListenerPose({
         ...view,
         listenerCockpitBlend: settings.listenerCockpitBlend,
@@ -968,6 +1014,7 @@ export function createFlightAudio(options: FlightAudioOptions): FlightAudioHandl
       previousCombustion = previousRunning = previousStarter = null;
       pose.valid = false;
       pose.sourceAxisValid = false;
+      for (const rotorPose of rotorPoses) { rotorPose.valid = false; rotorPose.sourceAxisValid = false; }
       node?.port.postMessage({ type: "reset" });
     },
 

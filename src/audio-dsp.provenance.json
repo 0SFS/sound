@@ -11,7 +11,7 @@
       "--no-entry",
       "-sSTANDALONE_WASM=1",
       "-sALLOW_MEMORY_GROWTH=1",
-      "-sINITIAL_MEMORY=2097152",
+      "-sINITIAL_MEMORY=16777216",
       "-sSTACK_SIZE=131072",
       "-sMALLOC=emmalloc",
       "-sERROR_ON_UNDEFINED_SYMBOLS=1",
@@ -24,7 +24,7 @@
   "sources": [
     {
       "file": "acoustic_profile.h",
-      "sha256": "d35915f2a472a34d977a5fbce208418e8648f51c719c36f058aa2091f1e5b91d"
+      "sha256": "082e8f346c402b5c442181320b339559dcb6d6b0d0580266499a4e94c3489e70"
     },
     {
       "file": "convolver.h",
@@ -32,32 +32,40 @@
     },
     {
       "file": "core.cpp",
-      "sha256": "1765ef2d23351b5b8c7c6b45f469d8dee00f5f8c3d7625bfbe0cef4778bc7b31"
+      "sha256": "514815c15be16d1b9ad8aa9c5dc6cc0b053c50f84641bd1d90a88c4fa9eee79f"
     },
     {
       "file": "granular.h",
       "sha256": "940b492d5ce19be0db016bcb756f2b9c561ca532cb8206b08927dce8d82b88f5"
     },
     {
-      "file": "piston.h",
-      "sha256": "7b1a5c10b8d3d3ba09eb969124dcb091a8ed801f32989ad09e8d760fe0f6292b"
-    },
-    {
       "file": "primitives.h",
-      "sha256": "c2280ccf199af4f05fc02d74a4c4336b270a92034ebd937a35b72e127cdec93a"
+      "sha256": "c2faa0593a15775f38a5f1c508980ea155a7bd5d9fa233aba697801ec87d41b8"
     },
     {
       "file": "snapshot.h",
-      "sha256": "1442e7aa8acede41374edf8a9c0b94776caeb8976741a1a7bf27a9acb33fc82d"
+      "sha256": "b73089016255fdeabc520060069268d67c9dad664362412f161c70839f1dd846"
     },
     {
-      "file": "turbofan.h",
-      "sha256": "dc92d7418f817adb045cd6f697e0999705f152042f38ab1aecf33115f21f2fbf"
+      "file": "tire_voice.h",
+      "sha256": "e87781b2076b00526d6b7f7a506227a3d4fbb0fc65712dc2a6551ff1a6f589a7"
+    },
+    {
+      "file": "../../engine-sound/src/primitives.h",
+      "sha256": "c2280ccf199af4f05fc02d74a4c4336b270a92034ebd937a35b72e127cdec93a"
+    },
+    {
+      "file": "../../engine-sound/src/voice_abi.h",
+      "sha256": "ce8c7f66f1a7d531396dddb7b714bb9706807d795a817b8a405ef58b514d7dd8"
+    },
+    {
+      "file": "../../engine-sound/src/voice_caps.h",
+      "sha256": "ee00015b53b3d5d99173ef1e278a395855f89d53f6f55a6f35ddc93fbfad4c94"
     }
   ],
   "wasm": {
-    "bytes": 54821,
-    "sha256": "37be82c9e98b6c73d80d55da739ff4c7f9841fd4e43db7140af0aa7f24357687"
+    "bytes": 43553,
+    "sha256": "0c86769a286ef11aebd2148e4381964e9a4324d5d13b6aca2a9b82742be0f079"
   },
   "imports": [
     "env.emscripten_notify_memory_growth"
@@ -74,25 +82,29 @@
     "osfs_audio_batch_length",
     "osfs_audio_batch_ptr",
     "osfs_audio_commit_batch",
-    "osfs_audio_commit_profile",
     "osfs_audio_get_shed",
     "osfs_audio_get_tier",
     "osfs_audio_init",
+    "osfs_audio_mix",
     "osfs_audio_out",
+    "osfs_audio_prepare",
     "osfs_audio_process",
-    "osfs_audio_profile_ptr",
-    "osfs_audio_profile_size",
     "osfs_audio_reset",
     "osfs_audio_set_afterburner_volume",
     "osfs_audio_set_epoch",
     "osfs_audio_set_gains",
     "osfs_audio_set_limits",
     "osfs_audio_set_shed",
+    "osfs_audio_set_source_type",
+    "osfs_audio_set_sources",
     "osfs_audio_set_tier",
     "osfs_audio_set_tire",
     "osfs_audio_snapshot_size",
+    "osfs_audio_source_count",
     "osfs_audio_stats",
-    "osfs_audio_stats_count"
+    "osfs_audio_stats_count",
+    "osfs_audio_voice_input_ptr",
+    "osfs_audio_voice_output_ptr"
   ],
-  "builtUtc": "2026-10-23T21:46:09.067Z"
+  "builtUtc": "2026-10-29T17:29:02.474Z"
 }

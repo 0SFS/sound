@@ -4,7 +4,7 @@ import {
   AUDIO_EVENT_SIZE, AUDIO_SNAPSHOT_SIZE, AVAILABILITY, readAudioSnapshotField, type AudioSnapshotInit,
 } from "../src/audioSnapshot";
 import { createPortTransport, createSabTransport, isSharedMemoryAvailable } from "../src/audioTransport";
-import { createDspHarness } from "../src/dspHarness";
+import { createReferenceHarness as createDspHarness } from "./fixtures/engineProfiles";
 
 const EVENT_BASE = AUDIO_BATCH_HEADER + AUDIO_BATCH_SNAPSHOTS * AUDIO_SNAPSHOT_SIZE;
 

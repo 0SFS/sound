@@ -86,6 +86,7 @@ const qualificationRecords = QUALIFIED_PROFILES as QualifiedProfile[];
 const realQualificationCount = qualificationRecords.length;
 function create(options: {
   stored?: object; inGesture?: boolean; unlockTarget?: EventTarget; loadWasm?: () => Promise<BufferSource>;
+  loadVoiceWasm?: (url: URL) => Promise<BufferSource>;
   catalogueDefaults?: boolean;
   suspendDelayMs?: number;
   qualificationContext?: () => AudioQualificationContext | undefined;
@@ -100,6 +101,7 @@ function create(options: {
     qualificationContext: options.qualificationContext,
     unlockTarget: options.unlockTarget ?? null,
     loadWasm: options.loadWasm ?? (async () => wasm),
+    loadVoiceWasm: options.loadVoiceWasm ?? (async url => readFileSync(url)),
     workletModuleUrl: "dspProcessor.js",
     capabilityOverrides: { audioWorklet: true, webAssembly: true },
     inGesture: () => options.inGesture ?? true,
@@ -226,9 +228,9 @@ describe("flight audio lifecycle (synthetic fakes)", () => {
     expect(view[AUDIO_BATCH_HEADER + AUDIO_SNAPSHOT_SLOT.n1Pct]).toBe(75);
     expect(audio.getStatus().engine).toMatchObject({ n1Pct: 75, n2Pct: 85, fuelFlowPps: 4 });
     expect(audio.getStatus().telemetry).toMatchObject({ profileLabel: "Approximate F135 procedural sound" });
-    expect(node.port.last("profile")).toEqual({ type: "profile", values: acousticProfileValues(adapter.diagnostics.profile) });
+    expect(node.port.last("profile")).toMatchObject({ type: "profile", voiceCount: 1, profiles: [acousticProfileValues(adapter.diagnostics.profile)] });
     audio.attachAdapter(fakeAdapter().adapter);
-    expect(node.port.last("profile")).toEqual({ type: "profile", values: acousticProfileValues() });
+    expect(node.port.last("profile")).toMatchObject({ type: "profile", voiceCount: 1, profiles: [acousticProfileValues(getAircraftAudioProfile("cirrus-vision-jet"))] });
   });
 
   it("admits C172 piston sound and transports native crankshaft, propeller and power readings", async () => {
@@ -245,7 +247,7 @@ describe("flight audio lifecycle (synthetic fakes)", () => {
     audio.setEnabled(true);
     const node = await booted();
     expect(node.options.processorOptions.initial).toMatchObject({
-      tier: 3, profile: acousticProfileValues(adapter.diagnostics.profile),
+      tier: 3, voiceCount: 1, profiles: [acousticProfileValues(adapter.diagnostics.profile)],
     });
     audio.publishStep();
     const snapshot = new Float64Array(node.port.last("batch")!.buffer as ArrayBuffer);
@@ -256,6 +258,38 @@ describe("flight audio lifecycle (synthetic fakes)", () => {
       engine: { kind: "piston", engineRpm: 2450, propellerRpm: 2440, shaftPowerHp: 112,
         combustion: true, running: true } });
     expect(audio.isEngineActive()).toBe(true);
+  });
+
+  it("boots one electric module with four profiles and transports every rotor independently", async () => {
+    const { audio } = create();
+    const { adapter, reading } = fakeAdapter();
+    const profile = getAircraftAudioProfile("dji-mini2")!;
+    adapter.diagnostics.profile = profile;
+    adapter.diagnostics.sourceProfiles = Array.from({ length: 4 }, () => profile);
+    adapter.diagnostics.sourceOffsets = [[-0.1, 0, 0.1], [0.1, 0, 0.1], [-0.1, 0, -0.1], [0.1, 0, -0.1]];
+    reading.electricRotors = [6000, 6500, 7000, 7500].map(rpm => ({ rpm, thrustN: 0.6,
+      shaftTorqueNm: 0.01, inducedVelocityMps: 3, vrs: 0, valid: true }));
+    Object.assign(reading, { airDensityKgM3: 1.225, airVelocityBodyMps: [0, 0, 0], armed: true,
+      availability: AVAILABILITY.ELECTRIC_ROTORS | AVAILABILITY.DENSITY });
+    audio.attachAdapter(adapter);
+    audio.setEnabled(true);
+    const node = await booted();
+    expect(node.options.processorOptions.voiceModule).toBeInstanceOf(WebAssembly.Module);
+    expect(node.options.processorOptions.initial).toMatchObject({ voiceCount: 4, profiles: expect.any(Array), sources: { sourceType: "electric", count: 4 } });
+    audio.publishStep();
+    const snapshot = new Float64Array(node.port.last("batch")!.buffer as ArrayBuffer);
+    expect(snapshot[AUDIO_BATCH_HEADER + AUDIO_SNAPSHOT_SLOT.electricSourceCount]).toBe(4);
+    for (let index = 0; index < 4; index++) expect(snapshot[AUDIO_BATCH_HEADER + AUDIO_SNAPSHOT_SLOT.rotor0Rpm + index * 16]).toBe(6000 + index * 500);
+    expect(audio.getStatus().engine).toMatchObject({ kind: "electric", rotorRpm: [6000, 6500, 7000, 7500] });
+    audio.beginEpoch();
+    expect(node.port.last("reset")).toMatchObject({ type: "reset" });
+  });
+
+  it("rejects mismatched generator bytes before creating a worklet", async () => {
+    const { audio } = create({ loadVoiceWasm: async () => wasm });
+    audio.setEnabled(true);
+    await vi.waitFor(() => expect(audio.getStatus().message).toMatch(/hash mismatch|import host functions|maximum memory/));
+    expect(FakeWorkletNode.instances).toHaveLength(0);
   });
 
   it("allocates nothing when the saved preference is off", () => {
@@ -297,7 +331,7 @@ describe("flight audio lifecycle (synthetic fakes)", () => {
     expect(node.options.processorOptions.module).toBeInstanceOf(WebAssembly.Module);
     // The first quantum must not wait on a port message for its tier and gains.
     expect(node.options.processorOptions.initial).toMatchObject({ tier: 2, gains: { master: 2, engine: 0.8 } });
-    expect(node.options.processorOptions.initial).toMatchObject({ profile: acousticProfileValues() });
+    expect(node.options.processorOptions.initial).toMatchObject({ voiceCount: 1, profiles: [acousticProfileValues(getAircraftAudioProfile("cirrus-vision-jet"))] });
     // Med is the accepted default; device performance records are separate.
     expect(node.port.last("tier")).toEqual({ type: "tier", tier: 2 });
     expect(node.port.last("gains")).toMatchObject({ master: 2, engine: 0.8, airframe: 0.6, tire: 0 });

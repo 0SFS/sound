@@ -7,7 +7,7 @@
  * mantissa, and one uniform element type keeps the transport a single copy.
  */
 
-export const AUDIO_SNAPSHOT_VERSION = 5;
+export const AUDIO_SNAPSHOT_VERSION = 6;
 
 /**
  * Slot order. Renaming, reordering or inserting a field is a breaking ABI
@@ -18,6 +18,10 @@ export const AUDIO_SNAPSHOT_VERSION = 5;
  * distance and the Doppler radial terms self-consistent, so the worklet never
  * has to know the world frame the app happens to use.
  */
+export const ROTOR_SNAPSHOT_SUFFIXES = ["Rpm", "ThrustN", "TorqueNm", "InducedVelocityMps", "Vrs", "Valid",
+  "SourceX", "SourceY", "SourceZ", "SourceVelX", "SourceVelY", "SourceVelZ", "AxisX", "AxisY", "AxisZ", "GroundReflectionM"] as const;
+export const ROTOR_SNAPSHOT_FIELDS = [0, 1, 2, 3].flatMap(i => ROTOR_SNAPSHOT_SUFFIXES.map(suffix => `rotor${i}${suffix}`)) as readonly `rotor${0 | 1 | 2 | 3}${typeof ROTOR_SNAPSHOT_SUFFIXES[number]}`[];
+
 export const AUDIO_SNAPSHOT_FIELDS = [
   "version",
   "sequence",
@@ -61,6 +65,8 @@ export const AUDIO_SNAPSHOT_FIELDS = [
   "afterburnerBurnedFuelFlowKgSec",
   /** Native piston crankshaft/propeller RPM and mechanical shaft power. */
   "engineRpm", "propellerRpm", "shaftPowerHp",
+  "electricSourceCount", "airDensityKgM3", "airVelocityX", "airVelocityY", "airVelocityZ", "armed",
+  ...ROTOR_SNAPSHOT_FIELDS,
 ] as const;
 
 export type AudioSnapshotField = typeof AUDIO_SNAPSHOT_FIELDS[number];
@@ -89,6 +95,8 @@ export const AVAILABILITY = Object.freeze({
   ENGINE_RPM: 1 << 13,
   PROPELLER_RPM: 1 << 14,
   SHAFT_POWER: 1 << 15,
+  ELECTRIC_ROTORS: 1 << 16,
+  DENSITY: 1 << 17,
 });
 
 /**
@@ -133,6 +141,19 @@ export const AUDIO_BATCH_LENGTH = AUDIO_BATCH_HEADER
   + AUDIO_BATCH_SNAPSHOTS * AUDIO_SNAPSHOT_SIZE
   + AUDIO_EVENT_CAPACITY * AUDIO_EVENT_SIZE;
 
+export interface ElectricRotorSnapshot {
+  rpm: number;
+  thrustN: number;
+  shaftTorqueNm: number;
+  inducedVelocityMps: number;
+  vrs: number;
+  valid: boolean;
+  source?: readonly [number, number, number];
+  sourceVelocity?: readonly [number, number, number];
+  sourceAxis?: readonly [number, number, number];
+  groundReflectionM?: number;
+}
+
 /** Human-readable snapshot, used by tests, fixtures and the sweep harness. */
 export interface AudioSnapshotInit {
   sequence: number;
@@ -163,6 +184,10 @@ export interface AudioSnapshotInit {
   propellerRpm?: number;
   shaftPowerHp?: number;
   sourceAxis?: readonly [number, number, number];
+  electricRotors?: readonly ElectricRotorSnapshot[];
+  airDensityKgM3?: number;
+  airVelocityBodyMps?: readonly [number, number, number];
+  armed?: boolean;
 }
 
 /** Non-finite input is refused rather than written: a NaN target de-tunes the core. */
@@ -231,6 +256,34 @@ export function writeAudioSnapshot(target: Float64Array, offset: number, init: A
     target[offset + s.sourceAxisZ] = 0;
     target[offset + s.availability] &= ~AVAILABILITY.SOURCE_AXIS;
   }
+  const rotors = init.electricRotors ?? [];
+  const count = Math.min(4, rotors.length);
+  target[offset + s.electricSourceCount] = count;
+  target[offset + s.armed] = init.armed ? 1 : 0;
+  const density = init.airDensityKgM3;
+  const densityValid = typeof density === "number" && Number.isFinite(density) && density > 0;
+  target[offset + s.airDensityKgM3] = densityValid ? density : 0;
+  if (!densityValid) target[offset + s.availability] &= ~AVAILABILITY.DENSITY;
+  const air = init.airVelocityBodyMps ?? [0, 0, 0];
+  target[offset + s.airVelocityX] = finite(air[0], 0);
+  target[offset + s.airVelocityY] = finite(air[1], 0);
+  target[offset + s.airVelocityZ] = finite(air[2], 0);
+  for (let i = 0; i < 4; i++) {
+    const rotor = rotors[i];
+    const start = offset + s.rotor0Rpm + i * ROTOR_SNAPSHOT_SUFFIXES.length;
+    const valid = !!rotor?.valid && [rotor.rpm, rotor.thrustN, rotor.shaftTorqueNm,
+      rotor.inducedVelocityMps, rotor.vrs].every(Number.isFinite) && rotor.rpm >= 0;
+    const position = rotor?.source ?? [0, 0, 0];
+    const velocity = rotor?.sourceVelocity ?? [0, 0, 0];
+    const direction = rotor?.sourceAxis ?? [0, 1, 0];
+    const length = Math.hypot(...direction);
+    const values = [rotor?.rpm, rotor?.thrustN, rotor?.shaftTorqueNm, rotor?.inducedVelocityMps,
+      rotor?.vrs, valid ? 1 : 0, ...position, ...velocity,
+      ...direction.map(v => length > 1e-9 ? v / length : 0), rotor?.groundReflectionM ?? -1];
+    for (let field = 0; field < values.length; field++) target[start + field] = finite(values[field], 0);
+  }
+  if (count === 0) target[offset + s.availability] &= ~AVAILABILITY.ELECTRIC_ROTORS;
+
 }
 
 export function readAudioSnapshotField(

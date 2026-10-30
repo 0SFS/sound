@@ -1,7 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
 import type { FlightAudioHandle } from "../src/createFlightAudio";
 import { createTireAudio, tireAudioParameters } from "../src/createTireAudio";
-import { createDspHarness, rms, TIER } from "../src/dspHarness";
+import { rms, TIER } from "../src/dspHarness";
+import { createReferenceHarness as createDspHarness } from "./fixtures/engineProfiles";
 
 function fakeAudio(tireMessage: string | null = null) {
   return {

@@ -43,7 +43,7 @@ export const EMCC_FLAGS = [
   "--no-entry",
   "-sSTANDALONE_WASM=1",
   "-sALLOW_MEMORY_GROWTH=1",
-  "-sINITIAL_MEMORY=2097152",
+  "-sINITIAL_MEMORY=16777216",
   "-sSTACK_SIZE=131072",
   "-sMALLOC=emmalloc",
   "-sERROR_ON_UNDEFINED_SYMBOLS=1",
@@ -59,7 +59,7 @@ export const EMCC_FLAGS = [
 export const REQUIRED_EXPORTS = [
   "memory", "_initialize",
   "osfs_audio_init", "osfs_audio_reset", "osfs_audio_set_tier", "osfs_audio_get_tier",
-  "osfs_audio_profile_ptr", "osfs_audio_profile_size", "osfs_audio_commit_profile",
+  "osfs_audio_set_source_type", "osfs_audio_set_sources", "osfs_audio_voice_input_ptr", "osfs_audio_voice_output_ptr", "osfs_audio_source_count", "osfs_audio_prepare", "osfs_audio_mix",
   "osfs_audio_set_shed", "osfs_audio_get_shed", "osfs_audio_set_limits", "osfs_audio_set_gains",
   "osfs_audio_set_afterburner_volume",
   "osfs_audio_set_epoch", "osfs_audio_batch_ptr", "osfs_audio_batch_length",
@@ -75,7 +75,8 @@ export function sourceInventory() {
   return readdirSync(sourceDir)
     .filter((name) => name.endsWith(".h") || name.endsWith(".cpp"))
     .sort()
-    .map((name) => ({ file: name, sha256: sha256(readFileSync(path.join(sourceDir, name))) }));
+    .map((name) => ({ file: name, sha256: sha256(readFileSync(path.join(sourceDir, name))) }))
+    .concat(["primitives.h", "voice_abi.h", "voice_caps.h"].map(name => ({ file: "../../engine-sound/src/" + name, sha256: sha256(readFileSync(path.join(sourceDir, "../../engine-sound/src", name))) })));
 }
 
 function emccVersion() {
