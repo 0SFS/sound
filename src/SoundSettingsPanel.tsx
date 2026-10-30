@@ -44,7 +44,7 @@ const COMBUSTION_SOURCE_LABELS: Record<string, string> = {
 
 const HOLD_LABELS = {
   pause: "paused", background: "page hidden", loading: "flight loading",
-  fault: "flight fault", reset: "resetting flight",
+  fault: "flight fault", reset: "resetting flight", rest: "aircraft at rest",
 } as const;
 
 /**

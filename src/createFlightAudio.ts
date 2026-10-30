@@ -24,7 +24,7 @@ import { AUDIO_HOST_RENDERER, rendererAdmission, type AudioRendererRegistration 
  * first byte moves only from a normal pilot gesture when sound is enabled.
  */
 
-export type AudioHoldReason = "pause" | "background" | "loading" | "fault" | "reset";
+export type AudioHoldReason = "pause" | "background" | "loading" | "fault" | "reset" | "rest";
 
 /** Nothing audible, the tire cue on its own, or engine sound (plus the tire cue when enabled). */
 export type FlightAudioMode = "off" | "tire-only" | "sound";
