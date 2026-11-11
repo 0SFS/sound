@@ -249,4 +249,36 @@ describe("sound settings panel", () => {
     const otherDefault = field === "masterVolume" ? DEFAULT_AUDIO_SETTINGS.engineVolume : DEFAULT_AUDIO_SETTINGS.masterVolume;
     expect(panel.host.querySelector<HTMLInputElement>(`input[aria-label="${otherVolume}"]`)!.value).toBe(String(otherDefault));
   });
+
+  it("renders electric drone acoustic tuning sliders, reset button, and mod JSON copy when electricTuning is active", async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    vi.stubGlobal("navigator", { clipboard: { writeText } });
+    const defaults = { tonalGain: 0.22, broadbandGain: 0.11, mechanicalGain: 0.035, outputGain: 0.8 };
+    const panel = await mount(status("med", {
+      electricTuning: { ...defaults, broadbandGain: 0.16, referenceThrustN: 0.6106725, defaults },
+    }));
+    const broadband = panel.host.querySelector<HTMLInputElement>('input[aria-label="Broadband air rush gain"]')!;
+    expect(broadband.value).toBe("0.16");
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(broadband, "0.18");
+      broadband.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    expect(panel.onAction).toHaveBeenCalledWith({ type: "electricTuning", patch: { broadbandGain: 0.18 } });
+
+    const resetBtn = panel.button("Reset drone tuning")!;
+    expect(resetBtn.disabled).toBe(false);
+    await act(async () => resetBtn.click());
+    expect(panel.onAction).toHaveBeenCalledWith({ type: "electricTuning", patch: null });
+
+    const copyBtn = panel.button("Copy mod JSON")!;
+    await act(async () => copyBtn.click());
+    expect(writeText).toHaveBeenCalledOnce();
+    expect(JSON.parse(writeText.mock.calls[0][0])).toEqual({
+      referenceThrustN: 0.6106725,
+      tonalGain: 0.22,
+      broadbandGain: 0.16,
+      mechanicalGain: 0.035,
+      outputGain: 0.8,
+    });
+  });
 });

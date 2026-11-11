@@ -1,5 +1,5 @@
 import { ChoiceTrack, Resettable } from "foss-earth/shell";
-import type { FlightAudioStatus } from "./createFlightAudio";
+import type { ElectricAcousticTuning, ElectricAcousticTuningValues, FlightAudioStatus } from "./createFlightAudio";
 import { AVAILABILITY_LABELS, type TierId } from "./audioQuality";
 import {
   AUDIO_QUALITY_IDS, AUDIO_QUALITY_LABELS, type AudioQualityId, type AudioSettingsV1,
@@ -11,7 +11,19 @@ export type SoundAction =
   | { type: "settings"; patch: Partial<Pick<AudioSettingsV1,
     "masterVolume" | "engineVolume" | "afterburnerVolume" | "listenerCockpitBlend"
     | "airframeVolume" | "engineMuted" | "reducedDynamicRange">> }
+  | { type: "electricTuning"; patch: Partial<ElectricAcousticTuningValues> | null }
   | { type: "retest" };
+
+export function formatElectricModParametersJson(tuning: ElectricAcousticTuning): string {
+  const round = (value: number): number => Number(value.toFixed(6));
+  return JSON.stringify({
+    referenceThrustN: tuning.referenceThrustN,
+    tonalGain: round(tuning.tonalGain),
+    broadbandGain: round(tuning.broadbandGain),
+    mechanicalGain: round(tuning.mechanicalGain),
+    outputGain: round(tuning.outputGain),
+  }, null, 2);
+}
 
 const percent = (value: number): string => Number.isFinite(value) ? `${value.toFixed(0)}%` : "n/a";
 
@@ -74,6 +86,13 @@ export function SoundSettingsPanel({ state, onAction }: {
   const audible = state.mode === "sound" && state.effective !== "off" && !state.gestureLocked;
   const requestedReason = qualityOption(state, settings.requested).reason;
   const retryQuality = settings.downgradedFrom ?? settings.requested;
+  const tuning = state.electricTuning ?? null;
+  const tuningModified = tuning !== null && (
+    Math.abs(tuning.tonalGain - tuning.defaults.tonalGain) > 1e-6 ||
+    Math.abs(tuning.broadbandGain - tuning.defaults.broadbandGain) > 1e-6 ||
+    Math.abs(tuning.mechanicalGain - tuning.defaults.mechanicalGain) > 1e-6 ||
+    Math.abs(tuning.outputGain - tuning.defaults.outputGain) > 1e-6
+  );
   return (
     <fieldset className="flight-panel__fieldset">
       <legend>Sound</legend>
@@ -159,6 +178,36 @@ export function SoundSettingsPanel({ state, onAction }: {
         </Resettable>
         <span>Reduced dynamic range</span>
       </label>
+      {tuning && <>
+        <label className="flight-panel__field">
+          <span>Tonal blade-passage gain · {tuning.tonalGain.toFixed(3)}</span>
+          <input type="range" aria-label="Tonal blade-passage gain" min={0} max={1} step={0.005} value={tuning.tonalGain}
+            onChange={event => onAction({ type: "electricTuning", patch: { tonalGain: Number(event.target.value) } })} />
+        </label>
+        <label className="flight-panel__field">
+          <span>Broadband air rush gain · {tuning.broadbandGain.toFixed(3)}</span>
+          <input type="range" aria-label="Broadband air rush gain" min={0} max={1} step={0.005} value={tuning.broadbandGain}
+            onChange={event => onAction({ type: "electricTuning", patch: { broadbandGain: Number(event.target.value) } })} />
+        </label>
+        <label className="flight-panel__field">
+          <span>Motor mechanical whine gain · {tuning.mechanicalGain.toFixed(3)}</span>
+          <input type="range" aria-label="Motor mechanical whine gain" min={0} max={0.5} step={0.005} value={tuning.mechanicalGain}
+            onChange={event => onAction({ type: "electricTuning", patch: { mechanicalGain: Number(event.target.value) } })} />
+        </label>
+        <label className="flight-panel__field">
+          <span>Propulsion output gain · {tuning.outputGain.toFixed(2)}</span>
+          <input type="range" aria-label="Propulsion output gain" min={0} max={2} step={0.05} value={tuning.outputGain}
+            onChange={event => onAction({ type: "electricTuning", patch: { outputGain: Number(event.target.value) } })} />
+        </label>
+        <button className="flight-panel__command" type="button" disabled={!tuningModified}
+          onClick={() => onAction({ type: "electricTuning", patch: null })}>
+          Reset drone tuning
+        </button>
+        <button className="flight-panel__command" type="button"
+          onClick={() => { void globalThis.navigator?.clipboard?.writeText?.(formatElectricModParametersJson(tuning)); }}>
+          Copy mod JSON
+        </button>
+      </>}
       <p className="flight-panel__hint">
         {state.telemetry?.profileLabel && <>{state.telemetry.profileLabel}. </>}
         {state.telemetry

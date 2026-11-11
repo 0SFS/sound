@@ -7,6 +7,7 @@ import {
 } from "./audioQuality";
 import type { AudioQualityId, AudioSettingsStore, AudioSettingsV1, SoundTierLimits } from "./audioSettings";
 import { createPortTransport, createSabTransport, isSharedMemoryAvailable, type AudioTransport } from "./audioTransport";
+import type { EngineAcousticDefinition } from "./engineAcousticDefinitions";
 import { toSnapshot, type AudioAdapter, type AudioAdapterReading } from "./jsbsimAudioAdapter";
 import { computeListenerPose, createListenerPose, type ListenerPose, type ListenerPoseInput } from "./audioPose";
 import type { AudioBankInstallation } from "./audioBank";
@@ -28,6 +29,18 @@ export type AudioHoldReason = "pause" | "background" | "loading" | "fault" | "re
 
 /** Nothing audible, the tire cue on its own, or engine sound (plus the tire cue when enabled). */
 export type FlightAudioMode = "off" | "tire-only" | "sound";
+
+export interface ElectricAcousticTuningValues {
+  tonalGain: number;
+  broadbandGain: number;
+  mechanicalGain: number;
+  outputGain: number;
+}
+
+export interface ElectricAcousticTuning extends ElectricAcousticTuningValues {
+  referenceThrustN: number;
+  defaults: ElectricAcousticTuningValues;
+}
 
 export interface FlightAudioStatus {
   enabled: boolean;
@@ -73,6 +86,8 @@ export interface FlightAudioStatus {
   } | null;
   /** Adapter diagnostics: which combustion rule ran, which properties are absent. */
   telemetry: { kind?: string; combustionSource: string; missing: readonly string[]; profileLabel?: string; approximation?: string } | null;
+  /** Live acoustic profile gain overrides and mod defaults when an electric propulsion plant is active. */
+  electricTuning?: ElectricAcousticTuning | null;
 }
 
 /** What the render loop knows about the view; the facade supplies source geometry and velocity. */
@@ -103,6 +118,31 @@ const UNLOCK_EVENTS = ["pointerdown", "keydown", "touchend"] as const;
 /** sound.md §2: publish snapshots at 60 Hz; decimate telemetry, never physics. */
 const PUBLISH_INTERVAL_S = 1 / 60;
 const ZERO_VELOCITY: readonly [number, number, number] = [0, 0, 0];
+const ELECTRIC_TUNING_KEYS = ["tonalGain", "broadbandGain", "mechanicalGain", "outputGain"] as const;
+
+function clampElectricGain(value: number): number {
+  return Math.min(16, Math.max(0, value));
+}
+
+function readElectricDefaults(
+  profile: EngineAcousticDefinition | undefined,
+): (ElectricAcousticTuningValues & { referenceThrustN: number }) | null {
+  if (!profile || profile.engineClass !== "electric" || !profile.parameters || typeof profile.parameters !== "object") {
+    return null;
+  }
+  const params = profile.parameters as Record<string, unknown>;
+  const { referenceThrustN, tonalGain, broadbandGain, mechanicalGain, outputGain } = params;
+  if (
+    typeof referenceThrustN !== "number" || !Number.isFinite(referenceThrustN) ||
+    typeof tonalGain !== "number" || !Number.isFinite(tonalGain) ||
+    typeof broadbandGain !== "number" || !Number.isFinite(broadbandGain) ||
+    typeof mechanicalGain !== "number" || !Number.isFinite(mechanicalGain) ||
+    typeof outputGain !== "number" || !Number.isFinite(outputGain)
+  ) {
+    return null;
+  }
+  return { referenceThrustN, tonalGain, broadbandGain, mechanicalGain, outputGain };
+}
 
 type AudioContextConstructor = new () => AudioContext;
 
@@ -162,6 +202,8 @@ export interface FlightAudioHandle {
   patchSettings(patch: Partial<Pick<AudioSettingsV1,
     "masterVolume" | "engineVolume" | "airframeVolume" | "afterburnerVolume" | "listenerCockpitBlend"
     | "engineMuted" | "reducedDynamicRange">>): void;
+  /** Live-tune the active electric propulsion acoustic profile gains, or pass null to restore mod defaults. */
+  patchElectricTuning(patch: Partial<ElectricAcousticTuningValues> | null): void;
   /** Enable and retry the selected sound, clearing a downgrade or processor fault. */
   retest(): void;
   /**
@@ -243,11 +285,42 @@ export function createFlightAudio(options: FlightAudioOptions): FlightAudioHandl
   let epochPending = true;
   const pose = createListenerPose();
   const rotorPoses = Array.from({ length: 4 }, () => createListenerPose());
+  const electricTuningByProfile = new Map<string, Partial<ElectricAcousticTuningValues>>();
+  const withElectricTuning = (profile: EngineAcousticDefinition): EngineAcousticDefinition => {
+    const override = electricTuningByProfile.get(profile.id);
+    if (!override || profile.engineClass !== "electric" || !profile.parameters || typeof profile.parameters !== "object") {
+      return profile;
+    }
+    return {
+      ...profile,
+      parameters: { ...(profile.parameters as Record<string, unknown>), ...override },
+    };
+  };
   const sourceProfiles = () => adapter?.diagnostics.sourceProfiles ?? (adapter?.diagnostics.profile ? [adapter.diagnostics.profile] : []);
   const sourceSetup = () => {
-    const profiles = sourceProfiles();
+    const profiles = sourceProfiles().map(withElectricTuning);
     return { voiceCount: profiles.length, profiles: renderer ? profiles.map(profile => renderer!.encodeParameters(profile)) : undefined,
       sources: renderer && profiles[0] ? renderer.installationColor(profiles[0], profiles.length) : undefined };
+  };
+  const currentElectricTuning = (): ElectricAcousticTuning | null => {
+    const profile = adapter?.diagnostics.profile;
+    const base = readElectricDefaults(profile);
+    if (!profile || !base) return null;
+    const override = electricTuningByProfile.get(profile.id);
+    const defaults: ElectricAcousticTuningValues = {
+      tonalGain: base.tonalGain,
+      broadbandGain: base.broadbandGain,
+      mechanicalGain: base.mechanicalGain,
+      outputGain: base.outputGain,
+    };
+    return {
+      tonalGain: override?.tonalGain ?? defaults.tonalGain,
+      broadbandGain: override?.broadbandGain ?? defaults.broadbandGain,
+      mechanicalGain: override?.mechanicalGain ?? defaults.mechanicalGain,
+      outputGain: override?.outputGain ?? defaults.outputGain,
+      referenceThrustN: base.referenceThrustN,
+      defaults,
+    };
   };
   let statsLine = "";
 
@@ -280,7 +353,7 @@ export function createFlightAudio(options: FlightAudioOptions): FlightAudioHandl
 
   const requestedTier = (): TierId => {
     if (engineWanted()) return resolveRequestedTier(settings.requested, capabilities).tier;
-    // The tire cue alone runs on the cheapest audible tier with the engine gain at zero.
+    // The tire cue alone runs on the cheapest audible kernel with the engine gain at zero.
     return tierAvailability("low", capabilities).state === "available" ? "low" : "off";
   };
 
@@ -348,6 +421,7 @@ export function createFlightAudio(options: FlightAudioOptions): FlightAudioHandl
         profileLabel: adapter.diagnostics.profile?.label, approximation: adapter.diagnostics.profile?.approximation,
       }
       : null,
+    electricTuning: currentElectricTuning(),
   });
 
   const notify = (): void => { if (!disposed) options.onStatusChange?.(status()); };
@@ -737,6 +811,32 @@ export function createFlightAudio(options: FlightAudioOptions): FlightAudioHandl
       settings = options.settings.settings;
       sendGains();
       refreshStats();
+      notify();
+    },
+
+    patchElectricTuning(patch) {
+      if (disposed) return;
+      const profile = adapter?.diagnostics.profile;
+      const base = readElectricDefaults(profile);
+      if (!profile || !base) return;
+      if (patch === null) {
+        electricTuningByProfile.delete(profile.id);
+      } else {
+        const next: Partial<ElectricAcousticTuningValues> = { ...electricTuningByProfile.get(profile.id) };
+        for (const key of ELECTRIC_TUNING_KEYS) {
+          const value = patch[key];
+          if (typeof value === "number" && Number.isFinite(value)) {
+            const clamped = clampElectricGain(value);
+            if (Math.abs(clamped - base[key]) < 1e-9) delete next[key];
+            else next[key] = clamped;
+          }
+        }
+        if (Object.keys(next).length === 0) electricTuningByProfile.delete(profile.id);
+        else electricTuningByProfile.set(profile.id, next);
+      }
+      if (node && renderer) {
+        node.port.postMessage({ type: "profile", ...sourceSetup() });
+      }
       notify();
     },
 

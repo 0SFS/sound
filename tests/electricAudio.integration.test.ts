@@ -5,6 +5,9 @@ import type { OsfsModManifest } from "@0sfs/mods/schema";
 import { installAudioMod } from "../src/installAudioMod";
 import { getAircraftAudioInstallation, resolveAircraftAudioInstallation } from "../src/aircraftAudioProfiles";
 import { createElectricAudioAdapter, type ElectricAudioFeed } from "../src/electricAudioAdapter";
+import { createAudioSettingsStore } from "../src/audioSettings";
+import { createFlightAudio } from "../src/createFlightAudio";
+import { soundParameterDefaults } from "../src/settings";
 import { toSnapshot } from "../src/jsbsimAudioAdapter";
 import { AVAILABILITY, type AudioSnapshotInit, type ElectricRotorSnapshot } from "../src/audioSnapshot";
 import { createDspHarness, rms, TIER } from "../src/dspHarness";
@@ -181,6 +184,36 @@ describe("electric telemetry adapter freshness and ownership", () => {
     expect(snapshot.armed).toBe(true);
     state.adapter.dispose(); state.adapter.dispose();
     expect(state.dispose).toHaveBeenCalledTimes(1);
+  });
+
+  it("tracks and resets live electric acoustic tuning overrides per propulsion profile", () => {
+    const state = setup();
+    const audio = createFlightAudio({ settings: createAudioSettingsStore(soundParameterDefaults()), unlockTarget: null });
+    audio.attachAdapter(state.adapter);
+    expect(audio.getStatus().electricTuning).toEqual({
+      referenceThrustN: expect.closeTo(0.6106725, 6),
+      tonalGain: 0.22,
+      broadbandGain: 0.11,
+      mechanicalGain: 0.035,
+      outputGain: 0.8,
+      defaults: { tonalGain: 0.22, broadbandGain: 0.11, mechanicalGain: 0.035, outputGain: 0.8 },
+    });
+    audio.patchElectricTuning({ broadbandGain: 0.18, tonalGain: 0.28 });
+    expect(audio.getStatus().electricTuning).toMatchObject({
+      tonalGain: 0.28,
+      broadbandGain: 0.18,
+      mechanicalGain: 0.035,
+      outputGain: 0.8,
+      defaults: { tonalGain: 0.22, broadbandGain: 0.11, mechanicalGain: 0.035, outputGain: 0.8 },
+    });
+    audio.patchElectricTuning(null);
+    expect(audio.getStatus().electricTuning).toMatchObject({
+      tonalGain: 0.22,
+      broadbandGain: 0.11,
+      mechanicalGain: 0.035,
+      outputGain: 0.8,
+    });
+    audio.dispose();
   });
 
   it.each(["wrong aircraft", "stale", "missing", "native failure", "feed failure", "invalid"])("invalidates %s and recovers with a fresh valid frame", reason => {
